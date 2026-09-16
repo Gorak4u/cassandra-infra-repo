@@ -1,0 +1,50 @@
+---
+# ===========================================================================
+# INFRA: acme / prod
+# ===========================================================================
+# Two Cassandra clusters, which is the case a flat per-node inventory handles
+# worst and this layout handles naturally: 'core' and 'analytics' sit side by
+# side, each with its own count and sizing, and each reads its own Hiera file.
+customer: 'acme'
+environment: 'prod'
+datacenter: 'dc_east'
+subnet: '172.32.32.0/24'
+
+products:
+  puppetmaster:
+    clusters:
+      pm:
+        count: 1
+        role: 'puppetmaster'
+        name_prefix: 'pm-acme'
+        sizing: 'large'
+        ip_offset: 10
+        serialize: false
+
+  cassandra:
+    clusters:
+      core:
+        count: 6
+        seed_count: 3
+        name_prefix: 'acme-core'
+        sizing: 'xlarge'
+        ip_offset: 20
+        racks: ['rack1', 'rack2', 'rack3']
+        serialize: true
+
+      # A second cluster of the SAME product for the SAME customer. Different
+      # count, different sizing, different Hiera file
+      # (.../clusters/analytics.yaml) -- and no interaction with 'core' beyond
+      # needing a non-overlapping ip_offset.
+      analytics:
+        count: 3
+        seed_count: 2
+        name_prefix: 'acme-analytics'
+        # xlarge, not large: Hiera pins a 16 GiB heap for this cluster, which
+        # needs ~20 GiB of machine once non-heap is counted. 'large' is 16 GiB
+        # -- heap equal to machine RAM can never work. check-sizing.py caught
+        # this; it was not noticed by reading.
+        sizing: 'xlarge'
+        ip_offset: 40
+        racks: ['rack1', 'rack2', 'rack3']
+        serialize: true

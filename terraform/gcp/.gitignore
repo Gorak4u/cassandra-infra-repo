@@ -1,0 +1,16 @@
+# tfvars hold environment-specific values including deploy key secret IDs.
+# Use terraform.tfvars.example as the template — never commit real tfvars.
+terraform.tfvars
+*.tfvars
+!*.tfvars.example
+
+# Backend config carries bucket names and state key paths — env-specific.
+backend.hcl
+
+# Terraform working files
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate
+terraform.tfstate.backup
+*.tfplan
+crash.log

@@ -1,0 +1,222 @@
+# ===========================================================================
+# AWS -- example configuration
+# ===========================================================================
+#
+# Copy to terraform.tfvars and edit. Two complete cases are shown:
+#
+#   CASE A  bring your own VPC, subnets, security groups and IAM  <- the norm
+#   CASE B  create everything once, in a fresh account
+#
+# Every create_* boolean defaults to FALSE, so CASE A is what you get if you
+# say nothing. Creating network or IAM resources is a deliberate, stated act.
+#
+# ONE STACK PER DATACENTRE. An AWS datacentre is a REGION, a provider is
+# configured for one region, so multi-region means running this once per region
+# with its own state -- which is also what you want: a single plan that can
+# destroy two regions at once is a bad afternoon.
+#
+#   terraform workspace new amex-nonprod-dc_east
+#   terraform apply -var-file=amex-nonprod-dc_east.tfvars
+
+# ---------------------------------------------------------------------------
+# COMMON TO BOTH CASES
+# ---------------------------------------------------------------------------
+region = "us-east-1"
+
+# Which slice of the inventory to build. This reads
+# infra/inventory/customers/amex/nonprod.yaml -- the SAME file the local Docker
+# driver reads. `count: 100` there produces 100 instances here.
+customer    = "amex"
+environment = "nonprod"
+
+# Which datacentre of that file. Null means the file's top-level `datacenter`.
+datacenter = "dc_east"
+
+# Build only Cassandra, because the master already exists. Very common: the
+# master is built once, separately, and then never again.
+products = ["cassandra"]
+
+# Must match the master's autosign_certname_pattern in Hiera or every CSR is
+# refused. Prefer a subdomain you own; `.internal` is ICANN-reserved for
+# exactly this and `.local` is mDNS.
+dns_domain = "nonprod.amex.internal"
+
+# The name agents use to reach the master. Must appear in the master's
+# dns_alt_names in Hiera, or the TLS handshake fails with a name mismatch --
+# which reads as a certificate problem and sends people the wrong way.
+#
+# A stable DNS name (a Route53 record, or an NLB in front of several compile
+# masters). NEVER an instance's private IP.
+# FALLBACK only. The inventory wins: puppet_server on a product, cluster or
+# datacentre in inventory/customers/<c>/<e>.yaml overrides this per node, which
+# is how one customer's cassandra fleet gets a different master from the rest
+# of its estate. See guides/09. State it there when it is a property of the
+# estate, and leave this as the default for whatever is left.
+puppet_server = "puppet.nonprod.amex.internal"
+
+# Must agree with the puppet_version pinned in Hiera.
+puppet_collection  = "puppet8"
+puppet_environment = "production"
+
+# A systemd distro the user-data supports, running cloud-init. Deliberately
+# RAW -- do not bake Puppet in: a baked agent means a baked puppet.conf, which
+# is how fleets end up pointed at a master that no longer exists.
+#
+# NOTE: the aws CLI must be present for the join secret to be readable. It is
+# on Amazon Linux and is NOT on stock Ubuntu or Debian AMIs -- either add it to
+# the AMI or install it in 10-metadata-aws.sh before the secret lookup.
+ami_id = "ami-0123456789abcdef0" # Ubuntu 22.04, your region
+
+# Storage. data_volume_size_gb = 0 puts Cassandra's data on the root volume,
+# which is workable for a test and wrong for anything else: a full disk then
+# takes the OS down with it, and the data cannot outlive the instance.
+root_volume_size_gb = 50
+data_volume_size_gb = 500
+data_volume_type    = "gp3"
+
+# Termination protection. Default TRUE, unlike most Terraform, because these
+# are stateful database nodes.
+disable_api_termination = true
+
+tags = {
+  Owner     = "platform-data"
+  CostCenter = "1234"
+}
+
+# ---------------------------------------------------------------------------
+# CASE A -- BRING YOUR OWN (the default; leave every create_* unset)
+# ---------------------------------------------------------------------------
+vpc_id = "vpc-0123456789abcdef0"
+
+# ORDER IS LOAD-BEARING. Nodes pick a subnet by rack index, so rack N lands in
+# subnet N. One PRIVATE subnet per availability zone is what turns Cassandra's
+# rack-awareness into real AZ separation of replicas. Shuffle this list and
+# replicas quietly share an AZ while `nodetool status` still shows different
+# racks.
+subnet_ids = [
+  "subnet-aaaa1111", # us-east-1a
+  "subnet-bbbb2222", # us-east-1b
+  "subnet-cccc3333", # us-east-1c
+]
+
+# Your centrally-managed groups. They must permit, between estate members:
+# 8140 (Puppet), 7000-7001 (internode), 7199 (JMX), 9042 (CQL). The exact rule
+# set is written out in network.tf so a network team can reproduce it.
+security_group_ids = ["sg-0123456789abcdef0"]
+
+# An existing instance profile whose policy allows GetSecretValue on the join
+# secret's ARN and nothing else.
+iam_instance_profile = "amex-nonprod-cassandra-node"
+
+# Secrets Manager secret holding the estate join secret. Its SHA-256 must be in
+# the master's Hiera as autosign_challenge_password_sha256.
+join_secret_id = "amex/nonprod/puppet-join-secret"
+
+# Session Manager instead of SSH: no inbound port, no bastion, an audit trail.
+# key_name = "my-keypair"   # only if you really need SSH
+
+# ---------------------------------------------------------------------------
+# CASE B -- CREATE EVERYTHING (fresh account; comment out CASE A above)
+# ---------------------------------------------------------------------------
+# create_vpc         = true
+# vpc_cidr           = "10.80.0.0/16"
+#
+# # len(azs) should be >= len(racks) in the inventory, and the ORDER matters:
+# # rack N lands in AZ N, and that is what keeps replicas apart.
+# availability_zones = ["us-east-1a", "us-east-1b", "us-east-1c"]
+#
+# # Without a NAT and without a mirror, FIRST BOOT HANGS installing the Puppet
+# # agent. It looks exactly like a user-data bug and is not.
+# create_nat_gateway = true
+#
+# create_security_group = true
+#
+# # Security groups allowed to reach CQL. By GROUP, never a CIDR: the module
+# # manages its own schema over CQL with a superuser, so anything that reaches
+# # 9042 and guesses the password owns the cluster.
+# cql_client_security_group_ids = ["sg-appservers0001"]
+#
+# create_iam_role   = true
+# attach_ssm_policy = true
+#
+# # BOTH are needed: the id is what the instance looks up, the ARN is what the
+# # IAM policy is pinned to. A wildcard there would let any node in the estate
+# # read every secret in the account.
+# join_secret_id  = "amex/nonprod/puppet-join-secret"
+# join_secret_arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:amex/nonprod/puppet-join-secret-AbCdEf"
+
+# ---------------------------------------------------------------------------
+# Control repo (required for the Puppet master)
+# ---------------------------------------------------------------------------
+# The git URL the master clones at first boot. Every cloud-provisioned master
+# needs this. The local Docker driver bind-mounts the checkout instead.
+#
+# Public repo or HTTPS:
+#   control_repo_url = "https://github.com/your-org/cassandra-control-repo.git"
+#
+# Private repo via SSH deploy key:
+#   control_repo_url                        = "git@github.com:your-org/cassandra-control-repo.git"
+#   control_repo_deploy_key_secret_id       = "puppet-control-repo-deploy-key"
+#   control_repo_deploy_key_secret_arn      = "arn:aws:secretsmanager:us-east-1:111122223333:secret:puppet-control-repo-deploy-key-AbCdEf"
+#
+# Create the secret out of band (key never touches Terraform state):
+#
+#   ssh-keygen -t ed25519 -C "puppet-master-deploy-key" -f id_ed25519_control_repo -N ""
+#
+#   aws secretsmanager create-secret \
+#     --name puppet-control-repo-deploy-key \
+#     --secret-string file://id_ed25519_control_repo \
+#     --region us-east-1
+#
+# Add the PUBLIC key (id_ed25519_control_repo.pub) as a read-only deploy key
+# in GitHub → Settings → Deploy keys.
+#
+# AWS SIZE NOTE: The master user-data includes r10k module deployment, which
+# grows the gzipped script. AWS caps user-data at 16 KiB gzipped. If the
+# plan-time precondition fails with a size error, pre-install r10k in the base
+# AMI (/opt/puppetlabs/puppet/bin/gem install r10k --no-document) to skip
+# the gem-install step and stay within the limit.
+control_repo_url = "git@github.com:your-org/cassandra-control-repo.git"
+# control_repo_deploy_key_secret_id  = "puppet-control-repo-deploy-key"
+# control_repo_deploy_key_secret_arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:puppet-control-repo-deploy-key-AbCdEf"
+
+# ---------------------------------------------------------------------------
+# THE REST -- every remaining variable, with its default. Rarely needed;
+# listed so this file is a complete reference rather than a happy path.
+# ---------------------------------------------------------------------------
+# clusters = []                  # restrict to named clusters; empty = all
+# name_prefix = "puppet-estate"  # names the SURROUNDING resources this stack
+#                                # creates, never the instances -- an instance's
+#                                # Name tag is its certname, and renaming it
+#                                # means reissuing a certificate.
+# root_volume_type = "gp3"
+# data_volume_iops = null        # null uses the volume type's default
+# kms_key_id = null              # null uses the account's default EBS key;
+#                                # volumes are ALWAYS encrypted either way
+# extra_tags_per_node = {}       # merged onto every instance, for cost allocation
+# subnet_newbits = 4             # /20 per AZ from a /16 when create_vpc = true.
+#                                # The NAT subnet takes the LAST index at this
+#                                # prefix length, derived, so changing this
+#                                # cannot silently overlap a private subnet.
+# data_device_name = "/dev/sdf"  # NVMe instance types IGNORE this and expose
+#                                # /dev/nvme1n1 -- mount by serial, not by path
+
+# instance_type_override = null
+#   Bypasses the inventory's `sizing:` shape. It also bypasses
+#   check-sizing.py's guarantee that the machine fits the JVM heap Hiera pins,
+#   and that mismatch is SILENT: the process is OOM-killed after a
+#   clean-looking startup with nothing failing in Puppet. Prefer editing the
+#   sizing shape in inventory/defaults.yaml.
+
+# ports = {}
+#   Overrides inventory/defaults.yaml per stack, e.g. { cassandra_cql = 9142 }.
+#   cassandra_cql MUST equal profile_cassandra_pfpt::native_transport_port in
+#   Hiera. Nothing enforces that, and a mismatch is quiet: the ring forms
+#   (internode is a different port) and then nothing can connect.
+#   Prefer changing inventory/defaults.yaml so BOTH clouds and the local
+#   driver move together.
+
+# aws_endpoint_url = null
+#   LocalStack / any AWS-compatible endpoint, e.g. "http://localhost:4566".
+#   See localstack.tfvars. Tests the RESOURCE GRAPH only -- LocalStack's EC2
+#   instances are mock records, nothing boots and no Puppet agent installs.

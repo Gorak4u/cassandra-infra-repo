@@ -1,0 +1,35 @@
+# ===========================================================================
+# infra/.gitignore
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Terraform
+# ---------------------------------------------------------------------------
+# Working state -- remote state (S3/GCS) is the source of truth in production.
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate
+terraform.tfstate.backup
+*.tfplan
+crash.log
+
+# tfvars hold environment-specific values including deploy key secret IDs.
+# Use terraform.tfvars.example as the template -- never commit real tfvars.
+terraform.tfvars
+*.auto.tfvars
+
+# Backend config carries bucket names, state keys, region -- per-workspace.
+backend.hcl
+
+# ---------------------------------------------------------------------------
+# provision.sh generated state
+# ---------------------------------------------------------------------------
+# Generated per-run: certname-specific metadata and assembled user-data.
+# The Forge download cache (.state/cache/) is intentionally NOT ignored --
+# it contains pinned immutable tarballs and avoids re-downloading on rebuild.
+.state/inventory.expanded
+.state/render-*/
+.state/pm1/
+.state/cass*/
+.state/jenkins*/
+.state/*-facts.json

@@ -1,0 +1,64 @@
+# ===========================================================================
+# First-boot user-data runner -- the lab's cloud-init
+# ===========================================================================
+#
+# LOCAL/DOCKER ONLY. On EC2 and GCE this file is not used at all: cloud-init
+# runs user-data natively, so the whole mechanism below -- the unit, the
+# symlink in multi-user.target.wants/, the EnvironmentFile -- is a container
+# workaround and simply disappears. See guides/04-provisioning-beyond-the-lab.md.
+#
+# Mounted into the instance at create time, together with a symlink in
+# multi-user.target.wants/, so the node runs its own provisioning AT BOOT with
+# no external orchestration. Nothing execs into the container to start this:
+# the instance boots and configures itself, exactly as an EC2 or GCE instance
+# does from its user-data.
+#
+# Verified empirically: a regular unit file bind-mounted into
+# multi-user.target.wants/ is NOT picked up (systemctl reports it disabled and
+# it never runs). The directory entry has to be a symlink, so provision.sh
+# mounts a host directory containing one.
+
+[Unit]
+Description=Instance user-data (first boot provisioning)
+Documentation=file:///usr/local/sbin/user-data.sh
+# The script installs packages from the network, so it must not start before
+# there is one. In a container this resolves almost immediately; the dependency
+# matters on a slow first boot.
+Wants=network-online.target
+After=network-online.target
+
+# Run once per instance, not once per boot. The script writes this marker when
+# it finishes; a restarted container therefore keeps its state instead of
+# reinstalling and re-registering. Same semantics as cloud-init's
+# 'instance' scope.
+ConditionPathExists=!/var/lib/instance/user-data.done
+
+[Service]
+Type=oneshot
+# The unit stays 'active' after the script exits, so `systemctl is-active
+# userdata` is a usable "provisioning finished" signal and a failure remains
+# visible in `systemctl status` rather than vanishing.
+RemainAfterExit=yes
+
+# The instance metadata document. Provisioning generates one of these per node
+# and mounts it read-only -- the equivalent of EC2 instance tags plus the
+# metadata service. It is the ONLY channel by which the platform tells the
+# instance who it is.
+#
+# Why a file rather than `docker run -e`: systemd is PID 1 here, and systemd
+# does not pass its own environment on to the services it starts. Variables
+# set with -e reach PID 1 and stop there.
+EnvironmentFile=/etc/instance-metadata
+
+# Output is redirected by the shell rather than with StandardOutput=append:,
+# which needs systemd >= 240. Rocky 8 ships 239, and the lab's OS table
+# includes it.
+ExecStart=/bin/sh -c '/usr/local/sbin/user-data.sh >> /var/log/user-data.log 2>&1'
+
+# Installing a JVM and Cassandra over a slow link takes a while, and the
+# Cassandra nodes additionally wait for the node before them in the ring. The
+# default of 90s would kill provisioning long before it finished.
+TimeoutStartSec=3600
+
+[Install]
+WantedBy=multi-user.target

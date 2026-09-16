@@ -1,0 +1,34 @@
+---
+# ===========================================================================
+# INFRA: acme / staging
+# ===========================================================================
+# The same customer, a different environment, a separate file. An edit here
+# cannot affect acme/prod -- which is the point of one file per
+# customer+environment rather than one file per customer.
+customer: 'acme'
+environment: 'staging'
+datacenter: 'dc_east'
+subnet: '172.33.33.0/24'
+
+products:
+  cassandra:
+    clusters:
+      core:
+        count: 3
+        seed_count: 2
+        name_prefix: 'acme-stg'
+        # Staging runs cheaper than prod, but not arbitrarily cheap: Hiera
+        # pins a 2 GiB heap here, which needs ~3.2 GiB of machine. 'small' is
+        # 2 GiB, so it was wrong -- caught by check-sizing.py, not by reading.
+        #
+        # The Cassandra VERSION pin is unchanged from prod, which is the point
+        # of staging: same release, cheaper hardware.
+        sizing: 'medium'
+        ip_offset: 11
+        racks: ['rack1']
+        serialize: true
+
+# No puppetmaster: acme/staging is served by acme/prod's master. The expander
+# only requires a master in the whole expansion, not in every file -- so a
+# slice selected with CUSTOMER=acme ENVIRONMENT=staging will be rejected for
+# having no master, which is correct: that slice cannot stand alone.

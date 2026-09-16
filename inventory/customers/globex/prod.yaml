@@ -1,0 +1,32 @@
+---
+# ===========================================================================
+# INFRA: globex / prod
+# ===========================================================================
+# A third tenant, in a different datacentre. Configured by
+# data/customers/globex/prod/products/cassandra/clusters/core/dc_west.yaml.
+customer: 'globex'
+environment: 'prod'
+datacenter: 'dc_west'
+subnet: '172.34.34.0/24'
+
+products:
+  puppetmaster:
+    clusters:
+      pm:
+        count: 1
+        role: 'puppetmaster'
+        name_prefix: 'pm-globex'
+        sizing: 'large'
+        ip_offset: 10
+        serialize: false
+
+  cassandra:
+    clusters:
+      core:
+        count: 9
+        seed_count: 3
+        name_prefix: 'globex-core'
+        sizing: 'xlarge'
+        ip_offset: 11
+        racks: ['rack1', 'rack2', 'rack3']
+        serialize: true

@@ -1,0 +1,120 @@
+---
+# ===========================================================================
+# INFRA: amex / prod
+# ===========================================================================
+# Configured by data/customers/amex/prod/products/*/clusters/.
+#
+# NOT materialised by the local driver -- defaults.yaml names amex/nonprod as
+# the local slice. Build this one deliberately:
+#
+#   CUSTOMER=amex ENVIRONMENT=prod LIMIT=2 ./provision.sh up
+#
+# ...and note it would exceed this machine's five-container ceiling without
+# the LIMIT.
+customer: 'amex'
+environment: 'prod'
+datacenter: 'dc_east'
+
+# A DIFFERENT subnet from nonprod. Not cosmetic: the local driver puts every
+# slice on one bridge, so overlapping ranges across two environments would
+# collide. The expander catches that, but only if the ranges actually differ.
+subnet: '172.31.31.0/24'
+
+products:
+  puppetmaster:
+    clusters:
+      # =====================================================================
+      # TWO MASTERS, ONE CUSTOMER -- split by PRODUCT
+      # =====================================================================
+      # Two independent masters, not a master plus compile masters. Each has
+      # its own CA, so the trust domains are separate: the data master cannot
+      # sign a general-estate node and vice versa. That isolation is the
+      # reason to do this -- a compromised or misconfigured general master
+      # cannot hand a catalogue to a database node.
+      #
+      # The cost is real and worth stating: two CAs, two r10k deployments, two
+      # sets of autosign policy, and `puppet cert list` answers about half the
+      # estate wherever you run it. Prefer ONE master with compile masters
+      # unless the isolation is a requirement rather than a preference.
+      pm:
+        count: 1
+        role: 'puppetmaster'
+        name_prefix: 'pm-prod'
+        # Hiera gives prod masters java_heap 6g and 6 JRuby instances
+        # (products/puppetmaster/common.yaml), so the machine must be large.
+        # check-sizing.py enforces that relationship.
+        sizing: 'large'
+        ip_offset: 10
+        serialize: false
+
+      # The database estate's own master. Same customer, same environment, a
+      # different trust domain.
+      pm-data:
+        count: 1
+        role: 'puppetmaster'
+        name_prefix: 'pm-prod-data'
+        sizing: 'large'
+        ip_offset: 20
+        serialize: false
+
+  # =========================================================================
+  # Jenkins
+  # =========================================================================
+  # A SINGLETON: one per environment, so no seed concept and an explicit
+  # `role`. The role name is what manifests/site.pp maps to a role class
+  # ('jenkins' => 'role_jenkins_pfpt') and what the master's autosign
+  # allowlist must permit as pp_role -- see the note on the masters above.
+  #
+  # Served by the GENERAL master (pm-prod1), not the database one: it is CI,
+  # not a database node. Nothing is stated here, so it falls through to the
+  # implicit master for this customer+environment -- except there are two, so
+  # it has to be named. That is the ambiguity check doing its job.
+  jenkins:
+    puppet_server: 'pm-prod1.lab.pfpt'
+    clusters:
+      ci:
+        count: 1
+        role: 'jenkins'
+        name_prefix: 'jenkins-prod'
+        # Jenkins is a JVM with a heap plus however many executors' worth of
+        # forked processes. 'large' is 16384 MB; check-sizing.py has no heap
+        # key for this product yet, so the relationship is unverified -- see
+        # the note in bin/check-sizing.py.
+        sizing: 'large'
+        ip_offset: 30
+        serialize: false
+
+  cassandra:
+    # -----------------------------------------------------------------------
+    # THE PER-PRODUCT MASTER. Every cluster, every datacentre and every node
+    # of this product takes it; nothing else in the file changes.
+    #
+    # A node-resolvable NAME, not an IP -- and two things must already be true
+    # of it or the agent's failure reads as a certificate bug:
+    #
+    #   1. it is in that master's profile_puppetmaster_pfpt::dns_alt_names,
+    #      or the TLS handshake fails on a name mismatch;
+    #   2. that master's autosign policy accepts these certnames and their
+    #      pp_* extensions -- so pm-prod-data's Hiera needs pp_product:
+    #      ['cassandra'] and NOT the rest of the estate's products. The
+    #      allowlist is what makes the split mean something: without it, both
+    #      masters would sign anything and the separation is decorative.
+    #
+    # Here it is the master's own certname because prod is a single-region
+    # estate with no load balancer. In a larger one this is an internal LB
+    # record in front of several compile masters, and then it is NOT an
+    # inventory node -- which the expander allows on purpose.
+    puppet_server: 'pm-prod-data1.lab.pfpt'
+    clusters:
+      core:
+        count: 6
+        seed_count: 3
+        name_prefix: 'cass-prod'
+        # Production sizing. Hiera does NOT pin max_heap_size at amex/prod's
+        # cluster layer, so check-sizing.py reports it as inherited from a
+        # broader layer -- which is a real finding, not noise: sizing set at a
+        # broad layer applies to machines it was never measured against.
+        sizing: 'xlarge'
+        ip_offset: 11
+        racks: ['rack1', 'rack2', 'rack3']
+        serialize: true

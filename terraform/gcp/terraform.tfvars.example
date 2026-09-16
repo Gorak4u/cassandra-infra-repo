@@ -1,0 +1,209 @@
+# ===========================================================================
+# GCP -- example configuration
+# ===========================================================================
+#
+# Copy to terraform.tfvars and edit. Two complete cases are shown:
+#
+#   CASE A  bring your own VPC, subnet, firewall and service account  <- norm
+#   CASE B  create everything once, in a fresh project
+#
+# Every create_* boolean defaults to FALSE, so CASE A is what you get if you
+# say nothing. Creating network or IAM resources is a deliberate, stated act.
+#
+# ONE STACK PER DATACENTRE, with its own state:
+#
+#   terraform workspace new amex-nonprod-dc_east
+#   terraform apply -var-file=amex-nonprod-dc_east.tfvars
+
+# ---------------------------------------------------------------------------
+# COMMON TO BOTH CASES
+# ---------------------------------------------------------------------------
+project_id = "amex-nonprod-data"
+region     = "us-east1"
+
+# Zones nodes are placed in, BY RACK INDEX: rack N lands in zone N. That is the
+# mechanism by which Cassandra's rack-awareness becomes real zone separation of
+# replicas -- NetworkTopologyStrategy keeps replicas in different racks, and
+# this list is what maps a rack to physical failure-domain separation.
+#
+# len(zones) should be >= len(racks) in the inventory, and the ORDER matters.
+zones = ["us-east1-b", "us-east1-c", "us-east1-d"]
+
+# Which slice of the inventory to build. Reads
+# infra/inventory/customers/amex/nonprod.yaml -- the SAME file the local Docker
+# driver reads. `count: 100` there produces 100 instances here.
+customer    = "amex"
+environment = "nonprod"
+
+# Which datacentre of that file. Null means the file's top-level `datacenter`.
+datacenter = "dc_east"
+
+# Build only Cassandra, because the master already exists. Very common: the
+# master is built once, separately, and then never again.
+products = ["cassandra"]
+
+# Must match the master's autosign_certname_pattern in Hiera or every CSR is
+# refused. Prefer a subdomain you own; `.internal` is ICANN-reserved for
+# exactly this and `.local` is mDNS.
+dns_domain = "nonprod.amex.internal"
+
+# The name agents use to reach the master. Must appear in the master's
+# dns_alt_names in Hiera, or the TLS handshake fails with a name mismatch --
+# which reads as a certificate problem and sends people the wrong way.
+#
+# A stable name (a Cloud DNS private-zone record, or an internal load balancer
+# in front of several compile masters). NEVER an instance's internal IP.
+# FALLBACK only. The inventory wins: puppet_server on a product, cluster or
+# datacentre in inventory/customers/<c>/<e>.yaml overrides this per node, which
+# is how one customer's cassandra fleet gets a different master from the rest
+# of its estate. See guides/09. State it there when it is a property of the
+# estate, and leave this as the default for whatever is left.
+puppet_server = "puppet.nonprod.amex.internal"
+
+# Must agree with the puppet_version pinned in Hiera.
+puppet_collection  = "puppet8"
+puppet_environment = "production"
+
+# A systemd distro the user-data supports, running cloud-init. Deliberately
+# RAW -- do not bake Puppet in: a baked agent means a baked puppet.conf, which
+# is how fleets end up pointed at a master that no longer exists.
+boot_image = "ubuntu-os-cloud/ubuntu-2204-lts"
+
+# Storage. data_disk_size_gb = 0 puts Cassandra's data on the boot disk, which
+# is workable for a test and wrong for anything else: a full disk then takes
+# the OS down with it, and the data cannot outlive the instance.
+boot_disk_size_gb = 50
+data_disk_size_gb = 500
+data_disk_type    = "pd-ssd"
+
+# Both default to protecting the node, unlike most Terraform, because these are
+# stateful database nodes holding the only copy of some token ranges.
+deletion_protection = true
+
+# false: on a Cassandra node an unexpected stop is an outage and possibly a
+# repair. Change machine types deliberately, one node at a time, with the ring
+# checked in between.
+allow_stopping_for_update = false
+
+enable_shielded_vm = true
+enable_oslogin     = true # IAM-governed SSH, not metadata keys
+
+labels = {
+  owner       = "platform-data"
+  cost-center = "1234"
+}
+
+# ---------------------------------------------------------------------------
+# CASE A -- BRING YOUR OWN (the default; leave every create_* unset)
+# ---------------------------------------------------------------------------
+network_name    = "shared-nonprod-vpc"
+subnetwork_name = "shared-nonprod-us-east1"
+
+# Your centrally-managed firewall must permit, between estate members:
+# 8140 (Puppet), 7000-7001 (internode), 7199 (JMX), 9042 (CQL). The exact rule
+# set is written out in network.tf so a network team can reproduce it.
+
+# An existing service account whose only role is reading the join secret.
+service_account_email = "cassandra-node@amex-nonprod-data.iam.gserviceaccount.com"
+
+# Secret Manager secret holding the estate join secret. Its SHA-256 must be in
+# the master's Hiera as autosign_challenge_password_sha256.
+join_secret_id      = "puppet-join-secret"
+join_secret_version = "latest"
+
+# false when the service account already has roles/secretmanager.secretAccessor
+# granted outside this stack -- which is the usual case when the account is
+# managed centrally.
+grant_join_secret_access = false
+
+# Tags your existing firewall rules already match on.
+network_tags = ["allow-internal", "no-ingress"]
+
+# ---------------------------------------------------------------------------
+# CASE B -- CREATE EVERYTHING (fresh project; comment out CASE A above)
+# ---------------------------------------------------------------------------
+# create_network   = true
+# network_name     = "amex-nonprod"
+# subnetwork_name  = "amex-nonprod-us-east1"
+# subnetwork_cidr  = "10.80.0.0/20"
+#
+# # Instances have NO external IP. Without Cloud NAT and without an internal
+# # mirror, FIRST BOOT HANGS installing the Puppet agent. It looks exactly like
+# # a user-data bug and is not.
+# create_nat = true
+#
+# create_firewall_rules = true
+#
+# # Source tags allowed to reach CQL. By TAG, never a CIDR: the module manages
+# # its own schema over CQL with a superuser, so anything that reaches 9042 and
+# # guesses the password owns the cluster.
+# cql_client_source_tags = ["app-server"]
+#
+# create_service_account   = true
+# join_secret_id           = "puppet-join-secret"
+# grant_join_secret_access = true
+
+# ---------------------------------------------------------------------------
+# Control repo (required for the Puppet master)
+# ---------------------------------------------------------------------------
+# The git URL the master clones at first boot. Every cloud-provisioned master
+# needs this. The local Docker driver bind-mounts the checkout instead and
+# does not use this variable.
+#
+# Public repo or HTTPS with a token baked into the URL:
+#   control_repo_url = "https://github.com/your-org/cassandra-control-repo.git"
+#
+# Private repo via SSH deploy key:
+#   control_repo_url                  = "git@github.com:your-org/cassandra-control-repo.git"
+#   control_repo_deploy_key_secret_id = "puppet-control-repo-deploy-key"
+#   grant_deploy_key_access           = true   # false if IAM is managed elsewhere
+#
+# Create the deploy key secret out of band (key value never touches state):
+#
+#   ssh-keygen -t ed25519 -C "puppet-master-deploy-key" -f id_ed25519_control_repo -N ""
+#
+#   gcloud secrets create puppet-control-repo-deploy-key \
+#     --data-file=id_ed25519_control_repo \
+#     --replication-policy=automatic \
+#     --project=amex-nonprod-data
+#
+# Add the PUBLIC key (id_ed25519_control_repo.pub) as a read-only deploy key
+# in GitHub → Settings → Deploy keys.
+#
+# The private key is fetched by the master at first boot, used for git clone,
+# then immediately scrubbed from disk. Subsequent r10k deploys use the
+# credential the puppetmaster_pfpt module configures in Hiera.
+control_repo_url = "git@github.com:your-org/cassandra-control-repo.git"
+# control_repo_deploy_key_secret_id = "puppet-control-repo-deploy-key"
+# grant_deploy_key_access           = true
+
+# ---------------------------------------------------------------------------
+# THE REST -- every remaining variable, with its default. Rarely needed;
+# listed so this file is a complete reference rather than a happy path.
+# ---------------------------------------------------------------------------
+# clusters = []                  # restrict to named clusters; empty = all
+# name_prefix = "puppet-estate"  # names the SURROUNDING resources only. An
+#                                # instance is named by the inventory, because
+#                                # its name is its certname stem and renaming
+#                                # it means reissuing a certificate.
+# boot_disk_type = "pd-balanced"
+# metadata = {}                  # extra instance metadata, merged last
+# service_account_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+#   Scopes are a COARSE legacy control that sits in front of IAM. Narrowing
+#   them is not a substitute for a least-privilege service account, and
+#   narrowing them too far breaks Secret Manager access in a way that looks
+#   like an IAM problem.
+
+# machine_type_override = null
+#   Bypasses the inventory's `sizing:` shape, and with it check-sizing.py's
+#   guarantee that the machine fits the JVM heap Hiera pins. That mismatch is
+#   SILENT: the process is OOM-killed after a clean-looking startup with
+#   nothing failing in Puppet. Prefer editing inventory/defaults.yaml.
+
+# ports = {}
+#   Overrides inventory/defaults.yaml per stack, e.g. { cassandra_cql = 9142 }.
+#   cassandra_cql MUST equal profile_cassandra_pfpt::native_transport_port in
+#   Hiera, or the firewall opens a port nothing listens on: the ring forms
+#   (internode is separate) and every client is refused.
+#   Prefer changing inventory/defaults.yaml so both clouds and the local
+#   driver move together.

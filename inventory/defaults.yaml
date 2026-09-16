@@ -1,0 +1,233 @@
+---
+# ===========================================================================
+# INFRA DEFAULTS -- shared by every customer and environment
+# ===========================================================================
+#
+# The lowest-priority layer of the infra inventory. A customer/environment
+# file overrides anything here, exactly the way a Hiera layer does.
+#
+# Keep this file boring. A value that differs per customer, per environment or
+# per cluster belongs in the file that says so -- and every one of those files
+# exists, so there is no excuse to put it here.
+
+# ===========================================================================
+# LOCAL DRIVER: which slice of the estate to materialise
+# ===========================================================================
+# The inventory describes the WHOLE estate -- every customer, every
+# environment. provision.sh can only create Docker containers, and this
+# machine fits about five of them, so a bare `./provision.sh up` must not try
+# to build all of it.
+#
+# This names the default slice. Override per invocation:
+#
+#   CUSTOMER=acme ENVIRONMENT=prod ./provision.sh up
+#   LIMIT=2 ./provision.sh up
+#
+# Terraform ignores this entirely -- it reads the inventory files directly and
+# builds whichever slice its own configuration selects.
+local_slice:
+  customer: 'amex'
+  environment: 'nonprod'
+
+# --- Naming ---------------------------------------------------------------
+# =============================================================================
+# CHANGE THIS FOR PRODUCTION.
+# =============================================================================
+# This value flows everywhere:
+#   1. It suffixes every node's certname     (cass1.<domain>)
+#   2. It is written into each node's        `domain` fact by user-data
+#   3. Every Hiera key that references the estate's domain reads it via
+#      %{facts.domain} -- NO Hiera file in this repo hardcodes a suffix.
+#      Grep for it if you doubt: `grep -rn "lab\\.pfpt" cassandra-control-repo/data`
+#      returns only comments and this line's imprint on committed .pem certs.
+#
+# So changing the domain for a real estate is:
+#   - Edit this file (or override per-customer in
+#     infra/inventory/customers/<c>/<env>.yaml with a `domain:` key)
+#   - Re-provision (nodes read the new value at first boot)
+#   - Every dns_alt_names, autosign_certname_pattern, and ssh_node_pattern
+#     picks it up automatically.
+#
+# '.pfpt' is NOT a delegated TLD, which is convenient for a lab because it
+# cannot collide with anything real -- but it is not RESERVED either, so ICANN
+# could delegate it. In production use a subdomain you own
+# (nonprod.amex.internal), or '.internal', which ICANN reserved in 2024 for
+# exactly this. Never use '.local' -- that is mDNS.
+domain: 'lab.pfpt'
+
+# --- Puppet ---------------------------------------------------------------
+puppet:
+  collection: 'puppet8'
+  environment: 'production'
+  runinterval: '30m'
+
+  # --- Which master a node talks to ---------------------------------------
+  # Left UNSET on purpose. When nothing states a master, the expander finds
+  # the node with role 'puppetmaster' in the expansion and uses it -- which is
+  # right for a single-master estate and is what every inventory file here
+  # relied on before this key existed.
+  #
+  # State it -- here, or at any narrower layer -- when an estate has more than
+  # one master. Precedence, highest first:
+  #
+  #   datacenters.<dc>.puppet_server     one site's compile master
+  #   clusters.<c>.puppet_server         one cluster
+  #   products.<p>.puppet_server         ONE PRODUCT  <- the common case
+  #   <envfile>.puppet_server            one customer+environment
+  #   puppet.server (here)               the whole estate
+  #   implicit                           the expansion's own puppetmaster
+  #
+  # With two or more masters in one expansion the implicit fallback becomes
+  # AMBIGUOUS, and the expander refuses it rather than picking one -- a node
+  # silently pointed at the wrong master gets a catalogue from the wrong
+  # control repo, which is not a failure you want to debug from the outside.
+  #
+  # The value is a NAME AGENTS RESOLVE, and two things must already be true of
+  # it or the agent fails in a way that reads as a certificate bug:
+  #   - it appears in that master's profile_puppetmaster_pfpt::dns_alt_names,
+  #     or the TLS handshake is a name mismatch;
+  #   - that master's autosign policy accepts these nodes' certnames and
+  #     pp_* extensions, or every CSR is refused and the node sits at
+  #     --waitforcert forever.
+  # server: 'puppet.nonprod.amex.internal'
+
+# ===========================================================================
+# PORTS
+# ===========================================================================
+# THESE MUST AGREE WITH HIERA, and nothing enforces it, so they live in one
+# place rather than four.
+#
+# They were hardcoded in the AWS security group, the GCP firewall,
+# provision.sh's health checks and the user-data fragments -- four copies of
+# the same numbers, in three different languages. The failure that makes this
+# worth fixing is specific and quiet:
+#
+#   profile_cassandra_pfpt::native_transport_port is a Hiera parameter
+#   (default 9042). Set it to 9142 for a cluster and the security group still
+#   opens 9042. The ring forms perfectly -- internode gossip is a different
+#   port -- and then nothing can connect, the module's own schema execs fail,
+#   and `cluster-health.sh` reports a healthy ring.
+#
+# Infra cannot READ Hiera (that would invert the dependency: the control repo
+# describes what runs on a machine, the inventory describes the machine). So
+# the numbers are stated here, once, and Terraform, provision.sh and the
+# user-data fragments all take them from here. Changing a port is then this
+# file plus the matching Hiera key -- two edits that are obviously paired,
+# instead of five that are not.
+ports:
+  # Puppet Server. Agents reach the master here; the master also reaches
+  # itself, because it runs an agent against its own catalogue.
+  puppet: 8140
+
+  # Cassandra internode. BOTH are opened: which one is live depends on
+  # profile_cassandra_pfpt::ssl_enabled, and a firewall that disagrees with
+  # that gives you nodes that show DN with nothing but timeouts in the log.
+  cassandra_internode: 7000
+  cassandra_internode_tls: 7001
+
+  # JMX / nodetool. Estate-internal only, never widened -- JMX is remote code
+  # execution by design.
+  cassandra_jmx: 7199
+
+  # CQL. Must equal profile_cassandra_pfpt::native_transport_port.
+  cassandra_cql: 9042
+
+  # Jenkins' HTTP listener. Must equal profile_jenkins_pfpt::http_port, and
+  # the same trap applies: get it wrong and Jenkins serves perfectly on a port
+  # the firewall never opened, so the service is up, Puppet is green, and
+  # nobody can reach it.
+  jenkins_http: 8080
+
+# ===========================================================================
+# MACHINE SHAPES
+# ===========================================================================
+# Named sizes, resolved per platform. A cluster asks for `sizing: small`, not
+# for a machine type, so one name means the comparable machine on Docker, GCE
+# and EC2 -- and moving a cluster between platforms is not a rewrite.
+#
+# ram_mb is the AUTHORITATIVE figure and the one the consistency check uses.
+# The per-platform names below must actually correspond to it; if you add a
+# shape, get that right or the check silently validates against the wrong
+# number.
+#
+# WHY ram_mb MATTERS MORE THAN IT LOOKS
+# -------------------------------------
+# The JVM heap for these products lives in HIERA, not here -- Puppet configures
+# the application, infra creates the machine. The two must agree, and a
+# mismatch is SILENT: a Cassandra node with a 640M heap settles at about
+# 1.8 GiB RSS once off-heap memtables, the file cache, metaspace and direct
+# buffers are counted. Give it a 1400 MB machine and the kernel OOM-kills it in
+# a restart loop while Cassandra's own log shows a clean startup and no Puppet
+# resource fails.
+#
+# `bin/check-sizing.py` cross-checks every cluster's Hiera heap against the
+# ram_mb below. Run it in CI.
+sizing:
+  # Smallest shape that reliably runs a Cassandra node with a small heap.
+  # 2048 MB is MEASURED, not guessed -- see the note above.
+  small:
+    cpu: 2
+    ram_mb: 2048
+    local_mem: '2048m'
+    gcp_machine_type: 'e2-small'
+    aws_instance_type: 't3.small'
+
+  medium:
+    cpu: 2
+    ram_mb: 8192
+    # 3072m. 2048m was not enough and the failure was disruptive rather than
+    # obvious: pm1 runs puppetserver with a 1g heap and sat at ~1.6 GiB of a
+    # 2 GiB container, then was OOM-killed mid-compilation --
+    # `docker inspect pm1 --format '{{.State.OOMKilled}}'` => true. Agents then
+    # report "Connection refused ... port 8140", which reads as a network
+    # problem.
+    #
+    # The JVM itself is only ~1.1 GiB RSS; the rest is the agent, systemd and
+    # page cache, all of which count against the cgroup. That is why the heap
+    # figure alone does not predict the container size.
+    local_mem: '3072m'
+    gcp_machine_type: 'e2-standard-2'
+    aws_instance_type: 'm6i.large'
+
+  large:
+    cpu: 4
+    ram_mb: 16384
+    # 3072m, not 2048m like the smaller shapes. A Jenkins with a pipeline
+    # plugin set does not fit in 2 GiB: it was OOM-killed at exactly that
+    # limit, with a 1g heap plus metaspace, code cache, thread stacks and
+    # Jetty. See the jenkins entry in bin/check-sizing.py for the measurement.
+    #
+    # NOTE THE DIVERGENCE, because it is a real trap: ram_mb is what
+    # check-sizing.py validates against, local_mem is what the local driver
+    # actually gives the container, and for every shape above 'small' they
+    # differ. A cluster can therefore pass the sizing check and still be
+    # OOM-killed locally. They agree for 'small', which is why this has not
+    # bitten the Cassandra nodes.
+    local_mem: '3072m'
+    gcp_machine_type: 'n2-highmem-2'
+    aws_instance_type: 'r6i.large'
+
+  xlarge:
+    cpu: 8
+    ram_mb: 65536
+    local_mem: '2048m'
+    gcp_machine_type: 'n2-highmem-8'
+    aws_instance_type: 'r6i.2xlarge'
+
+# --- Operating system -----------------------------------------------------
+# Default OS for every node. Override per cluster to run a mixed-OS estate --
+# the OS-conditional configuration (package names, truststore paths,
+# repository shape) comes from the control repo's data/os/ layers, so no other
+# change is needed.
+os: 'ubuntu2004'
+
+# --- Ring join serialisation ---------------------------------------------
+# Cassandra refuses concurrent bootstrap: a node joining while another is
+# joining fails with "Other bootstrapping/leaving/moving nodes detected". So
+# joins must be serialised, and for the local driver that is a simple chain
+# derived by the expander.
+#
+# At cloud scale a static chain is the wrong tool -- 100 nodes in a linear
+# chain is a 7-hour build, and one dead node wedges the rest forever. Use a
+# lock with a TTL instead; see guides/.
+serialize_by_default: true

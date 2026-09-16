@@ -1,0 +1,205 @@
+---
+# ===========================================================================
+# INFRA: amex / nonprod
+# ===========================================================================
+# What MACHINES exist for this customer's nonprod estate. Nothing about what
+# runs on them -- that is the control repo's Hiera, keyed on the identity
+# stamped below.
+#
+# Deliberately mirrors the Hiera layout:
+#
+#   infra/inventory/customers/amex/nonprod.yaml          <- this file
+#   data/customers/amex/nonprod/products/<p>/clusters/   <- its configuration
+#
+# One file per customer per environment, so the blast radius of an edit is one
+# tenant's one environment, and CODEOWNERS can give each customer's file to the
+# team that owns it.
+
+customer: 'amex'
+environment: 'nonprod'
+datacenter: 'dc_east'
+
+# Git URL of the Puppet control repo. Cloned by the master at first boot on
+# cloud (GCP/AWS). The local Docker driver bind-mounts the checkout instead
+# and ignores this value. Override in tfvars if this environment's master
+# needs a different repo from the estate default.
+control_repo_url: 'git@github.com:amex/cassandra-control-repo.git'
+# control_repo_deploy_key_secret_id: 'puppet-control-repo-deploy-key'
+
+# --- Addressing (local driver only) ---------------------------------------
+# The expander assigns addresses from this subnet using each cluster's
+# ip_offset, and fails loudly on a collision or on running out of space.
+#
+# Ignored on GCP and AWS, where the platform assigns addresses. The one
+# exception is seeds, which need STABLE addresses -- see the note in the
+# cassandra cluster below.
+subnet: '172.30.30.0/24'
+
+# --- Ports ----------------------------------------------------------------
+# OVERRIDES inventory/defaults.yaml for this customer+environment only.
+#
+# products/jenkins/environments/nonprod.yaml puts every customer's nonprod
+# Jenkins on 8081, on the grounds that a nonprod CI server usually shares an
+# ingress with other tooling. The estate-wide default here is 8080, so without
+# this the firewall opens one port and Jenkins listens on the other -- and the
+# node's own boot-time health check polls the wrong one and reports a server
+# that is up as not serving.
+#
+# bin/check-ports.py compares this against Hiera. Run it in CI: nothing else
+# connects the two files.
+ports:
+  jenkins_http: 8081
+
+products:
+  # =========================================================================
+  # Puppet Server
+  # =========================================================================
+  puppetmaster:
+    clusters:
+      pm:
+        count: 1
+        role: 'puppetmaster'
+        # Explicit: the running master's certname is pm1.lab.pfpt, and a
+        # rename means reissuing its certificate and every agent's puppet.conf.
+        name_prefix: 'pm'
+        sizing: 'medium'
+        ip_offset: 10
+        # Nothing to wait for, and nothing waits for it -- the Cassandra nodes
+        # poll port 8140 themselves.
+        serialize: false
+
+        # Hiera pins java_heap: '1g' for this cluster. medium is 8192 MB, so
+        # there is ample headroom; check-sizing.py verifies that rather than
+        # trusting it.
+
+  # =========================================================================
+  # Jenkins
+  # =========================================================================
+  # A SINGLETON: one per environment, so no seed concept, no datacenters block
+  # and an explicit `role`. The role name is what manifests/site.pp maps to a
+  # role class ('jenkins' => 'role_jenkins_pfpt') and what this environment's
+  # master must permit as pp_role -- BOTH halves are required, and the second
+  # one is the easy one to miss: a node whose CSR is refused sits at
+  # --waitforcert forever and looks like a network problem.
+  #
+  # No puppet_server line: amex/nonprod has exactly one master, so the
+  # expander's implicit fallback resolves it. Name one here the moment a second
+  # master appears, because the fallback then becomes ambiguous and the
+  # expander refuses to guess.
+  jenkins:
+    clusters:
+      ci:
+        count: 1
+        role: 'jenkins'
+        name_prefix: 'jenkins'
+        # 'large', and NOT for the cloud machine type: it is the only shape
+        # whose local_mem is 3072m, and 2048m is measurably not enough. This
+        # node was OOM-killed at 2048m on its first boot -- 61 plugins, a 1g
+        # heap, and a JVM that had sized itself from the HOST's memory rather
+        # than the container's.
+        #
+        # check-sizing.py now has a measured footprint model for jenkins and
+        # checks this against profile_jenkins_pfpt::java_heap.
+        sizing: 'large'
+        ip_offset: 30
+        # Nothing to serialise: there is no ring to join one node at a time.
+        serialize: false
+
+  # =========================================================================
+  # Cassandra
+  # =========================================================================
+  cassandra:
+    clusters:
+      core:
+        # A MULTI-DATACENTRE cluster. `sizing` and `serialize` are stated once
+        # for the whole cluster; count, addressing, racks and naming are
+        # per-datacentre below.
+        #
+        # This mirrors the Hiera layout exactly:
+        #   clusters/core.yaml          cluster-wide
+        #   clusters/core/<dc>.yaml     one datacentre of it
+        sizing: 'small'
+        os: 'ubuntu2004'
+
+        # Serialise ring joins. Required: Cassandra refuses concurrent
+        # bootstrap, so without this the nodes fail and retry in a thundering
+        # herd rather than queueing. Applied per datacentre.
+        serialize: true
+
+        datacenters:
+          # -----------------------------------------------------------------
+          # dc_east -- the original datacentre
+          # -----------------------------------------------------------------
+          dc_east:
+            count: 1
+
+            # Explicit, and NOT the cluster name: this node is cass1, not
+            # core1. Renaming means reissuing the certificate, so it is pinned
+            # rather than derived.
+            name_prefix: 'cass'
+
+            # Single-node cluster: the one node is the seed. seed_count is not
+            # used here because seed_count >= count is an error; instead the
+            # role is stated directly.
+            role: 'cassandra_seed'
+
+            ip_offset: 11
+            racks: ['rack1']
+
+          # -----------------------------------------------------------------
+          # dc_west -- REMOVED, and left here as the record of how
+          # -----------------------------------------------------------------
+          # These two nodes were built, joined dc_east's live cluster as empty
+          # members, and were then taken out again to make room for the jenkins
+          # node below: this machine fits five containers and the Jenkins JVM
+          # needs one of them.
+          #
+          # Removing a datacentre is NOT deleting its nodes. The order that
+          # matters, and the order actually used here:
+          #
+          #   1. ALTER every keyspace to drop dc_west from the replication map.
+          #      system_auth, system_distributed and system_traces all named it.
+          #      Skip this and the surviving nodes keep trying to replicate to a
+          #      datacentre with no members: hints pile up, and any read at a
+          #      consistency level that counts dc_west replicas fails.
+          #   2. `nodetool decommission` each node, so it streams what it owns
+          #      to the remaining replicas and leaves the ring cleanly. A node
+          #      that is merely destroyed stays in gossip as DN and has to be
+          #      removed with `nodetool removenode` or assassinated.
+          #   3. `puppetserver ca clean` its certname on the master, or the CA
+          #      keeps a valid certificate for a machine that no longer exists.
+          #
+          # Restore it by uncommenting: the expander re-derives the addresses
+          # and the join chain, and data/customers/amex/nonprod/products/
+          # cassandra/clusters/core/dc_west.yaml is still in place.
+          #
+          # dc_west:
+          #   count: 2
+          #   name_prefix: 'cass-west'
+          #   seed_count: 1
+          #   # A separate range from dc_east's .11-.12, on the same lab
+          #   # bridge. The expander rejects an overlap.
+          #   ip_offset: 21
+          #   racks: ['rack1']
+
+        # Hiera sets max_heap_size: '640M' for this cluster. small is 2048 MB,
+        # which is the measured floor for that heap -- check-sizing.py enforces
+        # the relationship.
+
+      # ---------------------------------------------------------------------
+      # An example of what growing looks like. Commented out so the lab stays
+      # at five containers, which is this machine's physical ceiling
+      # (11945 MiB / 2048 MiB per node).
+      #
+      # Note what does NOT appear here: any per-node line, any hand-assigned
+      # address, any hand-written join chain. And on the configuration side,
+      # a new cluster needs exactly one new Hiera file --
+      #   data/customers/amex/nonprod/products/cassandra/clusters/analytics.yaml
+      # ---------------------------------------------------------------------
+      # analytics:
+      #   count: 100
+      #   seed_count: 3
+      #   sizing: 'large'
+      #   ip_offset: 50
+      #   racks: ['rack1', 'rack2', 'rack3']
+      #   serialize: true
