@@ -34,10 +34,19 @@ jobs:
         run: pip install pyyaml
       - name: expand inventory (all customers)
         run: python3 bin/expand-inventory.py --format yaml > /dev/null
-      - name: check ports (infra vs Hiera agreement)
-        run: python3 bin/check-ports.py
-      - name: check sizing (machine shape vs JVM heap)
-        run: python3 bin/check-sizing.py
+      # bin/check-ports.py and bin/check-sizing.py are deliberately NOT run
+      # here. Both compare an infra value against the Hiera data that sets it,
+      # so both need cassandra-control-repo checked out alongside this one.
+      # That repo is private, and the built-in GITHUB_TOKEN is scoped to this
+      # repository only -- so the steps could never pass on a runner, and the
+      # job failed at check-ports on every run from the initial import onward.
+      #
+      # Run them where both halves of the estate are present:
+      #
+      #   check-ports.py    ports the firewall opens vs. the port the service binds
+      #   check-sizing.py   machine shape vs. the JVM heap Hiera asks for
+      #
+      # Both honour PUPPET_CONTROL_REPO and default to ../cassandra-control-repo.
       - name: bash syntax (provision.sh + user-data fragments)
         run: |
           bash -n provision.sh
