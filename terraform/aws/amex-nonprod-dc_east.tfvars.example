@@ -154,6 +154,26 @@ attach_ssm_policy = true
 control_repo_url                  = "git@github.com:Gorak4u/cassandra-control-repo.git"
 control_repo_deploy_key_secret_id = "amex/nonprod/control-repo-deploy-key"
 
+# REQUIRED WITH create_iam_role, and easy to miss because nothing fails at
+# plan time. iam.tf only attaches GetSecretValue for the deploy key when the
+# ARN is set:
+#
+#   count = var.create_iam_role && var.control_repo_deploy_key_secret_arn != null ? 1 : 0
+#
+# Leave it null and the role is built without that permission, the master
+# boots, 10-metadata-aws.sh warns "could not read deploy key ... check the
+# instance profile's GetSecretValue permission", and the clone then fails
+# against a private repo. The id alone is not enough: an id is a name, and a
+# policy has to name a resource.
+#
+# NOT SET HERE: a secret ARN carries the account id, and this repo is public.
+# Put it in your own gitignored copy of this file. To read it back:
+#
+#   aws secretsmanager describe-secret --region us-east-1 \
+#     --secret-id amex/nonprod/control-repo-deploy-key --query ARN --output text
+#
+# control_repo_deploy_key_secret_arn = "arn:aws:secretsmanager:us-east-1:<account>:secret:amex/nonprod/control-repo-deploy-key-XXXXXX"
+
 # "main", NOT the "production" default. puppet_environment is the BRANCH
 # cloned -- `git clone --branch "${PUPPET_ENVIRONMENT}"` -- and
 # Gorak4u/cassandra-control-repo has only main. Left at the default the clone
