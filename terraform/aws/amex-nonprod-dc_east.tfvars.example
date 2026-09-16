@@ -1,0 +1,167 @@
+# ===========================================================================
+# amex / nonprod / dc_east -- PUPPET MASTER ONLY
+# ===========================================================================
+#
+# The master is built ONCE, before anything else, and on its own. Everything
+# else in the estate needs it to already exist: a Cassandra node that boots
+# without a master installs the agent, finds nothing to talk to, and sits
+# there as an EC2 charge with no Cassandra on it.
+#
+# Copy this file and fill in the REPLACE_ME values:
+#
+#   cp amex-nonprod-dc_east.tfvars.example amex-nonprod-dc_east.tfvars
+#   ./bootstrap-account.sh amex-nonprod-dc_east.tfvars
+#
+# The copy is gitignored (*.tfvars), this template is not. Keep it that way:
+# the real file names your account's secrets.
+#
+# WHAT bootstrap-account.sh SUPPLIES ITSELF -- do not hand-write these:
+#   products=["puppetmaster"]   passed as -var, overrides anything here
+#   join_secret_arn             read back from Secrets Manager after creating
+#   backend.hcl                 written from customer/environment/region
+#   the S3 state bucket         named <customer>-<environment>-tfstate
+#
+# The script REQUIRES these seven keys to be present and non-empty, as quoted
+# strings, or it dies before touching AWS:
+#   customer  environment  datacenter  region  dns_domain
+#   puppet_server  join_secret_id
+# ---------------------------------------------------------------------------
+
+# --- Identity of this slice ------------------------------------------------
+# These three must match an inventory file that already exists:
+#   inventory/customers/amex/nonprod.yaml, whose datacenter is dc_east.
+# That file already declares the node -- products.puppetmaster.clusters.pm,
+# count 1, role puppetmaster, name_prefix pm, sizing medium. You are not
+# describing a machine here, only telling Terraform which slice to build.
+customer    = "amex"
+environment = "nonprod"
+datacenter  = "dc_east"
+
+# Restricting to the master. bootstrap-account.sh passes this as -var anyway;
+# it is repeated here so a plain `terraform apply -var-file=...` does the same
+# thing rather than trying to build the whole slice.
+products = ["puppetmaster"]
+
+# --- Region ----------------------------------------------------------------
+region = "REPLACE_ME" # e.g. "us-east-1"
+
+# ===========================================================================
+# NAMES -- decide these before the first boot, they are baked into certificates
+# ===========================================================================
+#
+# dns_domain replaces the inventory default 'lab.pfpt', which is a lab value
+# and must not be used for anything real (see inventory/defaults.yaml). It
+# becomes every node's certname suffix, so this master's certname is
+#
+#     pm1.<dns_domain>
+#
+# Changing it later means reissuing every certificate in the estate.
+dns_domain = "REPLACE_ME" # e.g. "nonprod.amex.internal"
+
+# The name AGENTS RESOLVE to reach the master, and the name bootstrap-account.sh
+# creates the Route 53 A record for.
+#
+# Two choices, both valid:
+#   "pm1.<dns_domain>"     the master's own certname -- nothing else to do
+#   "puppet.<dns_domain>"  a stable alias, so replacing pm1 does not re-point
+#                          every agent
+#
+# EITHER WAY it must appear in the master's Hiera as
+# profile_puppetmaster_pfpt::dns_alt_names, or the agent TLS handshake is a
+# name mismatch that reads as a certificate bug rather than a DNS choice.
+puppet_server = "REPLACE_ME" # e.g. "puppet.nonprod.amex.internal"
+
+# ===========================================================================
+# THE MACHINE
+# ===========================================================================
+#
+# NOT set here: instance type. The inventory says sizing 'medium', which
+# defaults.yaml resolves to m6i.large (8 GB). That is measured, not guessed --
+# puppetserver was OOM-killed mid-compilation at 2 GB and the symptom read as
+# "Connection refused ... port 8140". Use instance_type_override only with a
+# reason.
+#
+# AMI: nothing cross-checks this against the inventory's `os` value
+# (ubuntu2004), which only flows to the control repo's data/os/ Hiera layers.
+# Pick an AMI matching the os you declare, or Puppet applies the wrong package
+# names and paths against a silently mismatched box.
+ami_id = "REPLACE_ME" # Ubuntu 20.04 AMI id, in the region above
+
+# The master stores code and certs on the root volume and needs no data
+# volume. 50 GB is the default and is enough.
+root_volume_size_gb = 50
+data_volume_size_gb = 0
+
+# A master is not cattle. Termination protection stays on.
+disable_api_termination = true
+
+# Optional: an EC2 key pair for SSH. Leave null and reach the box with
+# `aws ssm start-session` instead -- attach_ssm_policy defaults to true, and
+# bootstrap-account.sh uses SSM to wait for user-data to finish.
+# key_name = "amex-nonprod"
+
+# ===========================================================================
+# NETWORK
+# ===========================================================================
+# Existing-VPC path. For a greenfield account instead set create_vpc = true
+# and create_security_group = true, and drop the three ids below.
+#
+# One subnet is enough for one master. There is a plan-time precondition that
+# at least one is present.
+vpc_id             = "REPLACE_ME"   # vpc-...
+subnet_ids         = ["REPLACE_ME"] # subnet-... (one is enough)
+security_group_ids = ["REPLACE_ME"] # sg-... must allow 8140 in from the estate
+
+# ===========================================================================
+# IAM
+# ===========================================================================
+# An existing instance profile NAME (not ARN). The role behind it needs
+# secretsmanager:GetSecretValue on the two secrets below, and the SSM managed
+# policy.
+#
+# Alternatively set create_iam_role = true and let this stack build the role,
+# in which case supply control_repo_deploy_key_secret_arn as well so the
+# policy can be scoped to that one ARN.
+iam_instance_profile = "REPLACE_ME" # e.g. "amex-nonprod-puppetmaster"
+
+# ===========================================================================
+# CONTROL REPO -- what makes this a master rather than an empty Ubuntu box
+# ===========================================================================
+# At first boot 30-role-puppetmaster.sh clones this, then runs
+# `r10k puppetfile install` against the Puppetfile. With no repo it dies with
+# "nothing to apply".
+#
+# The branch it clones is puppet_environment (default "production"), and that
+# branch must contain manifests/site.pp, hiera.yaml, environment.conf and a
+# Puppetfile.
+control_repo_url = "REPLACE_ME" # e.g. "git@github.com:amex/cassandra-control-repo.git"
+
+# Needed only for an SSH control_repo_url. The secret's value is the raw PEM
+# private key: the master fetches it, uses it for the initial clone, then
+# scrubs it from disk. Omit both for an HTTPS public repo.
+control_repo_deploy_key_secret_id = "REPLACE_ME" # e.g. "amex/nonprod/control-repo-deploy-key"
+# control_repo_deploy_key_secret_arn = "arn:aws:secretsmanager:..."  # only with create_iam_role
+
+# puppet_collection  = "puppet8"      # inventory default
+# puppet_environment = "production"   # the branch cloned above
+
+# ===========================================================================
+# JOIN SECRET
+# ===========================================================================
+# bootstrap-account.sh CREATES this secret if it does not exist (32 random
+# bytes) and prints a SHA-256 for you to paste into the master's Hiera as
+# profile_puppetmaster_pfpt::autosign_challenge_password_sha256. It pauses and
+# waits for you to do it.
+#
+# You choose the NAME here; you do not create the secret yourself.
+join_secret_id = "amex/nonprod/puppet-join-secret"
+
+# ===========================================================================
+# TAGS
+# ===========================================================================
+tags = {
+  Owner       = "REPLACE_ME"
+  CostCenter  = "REPLACE_ME"
+  Environment = "nonprod"
+  ManagedBy   = "terraform"
+}
