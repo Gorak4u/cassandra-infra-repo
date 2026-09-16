@@ -8,7 +8,7 @@
 # there as an EC2 charge with no Cassandra on it.
 #
 #   cp amex-nonprod-dc_east.tfvars.example amex-nonprod-dc_east.tfvars
-#   # fill in ami_id, and create the deploy key secret (BEFORE YOU RUN below)
+#   # create the deploy key secret first (BEFORE YOU RUN below)
 #   ./bootstrap-account.sh amex-nonprod-dc_east.tfvars
 #
 # The copy is gitignored (*.tfvars), this template is not. Keep it that way.
@@ -28,18 +28,11 @@
 #   the Route 53 A record       upserted if a hosted zone matches dns_domain
 #
 # ---------------------------------------------------------------------------
-# BEFORE YOU RUN -- the two things this file cannot default
+# BEFORE YOU RUN
 # ---------------------------------------------------------------------------
-# 1. ami_id. Region-specific and it changes with every Canonical release, so
-#    there is no sane constant. Get today's Ubuntu 20.04 id with:
-#
-#      aws ssm get-parameter --region us-east-1 \
-#        --name /aws/service/canonical/ubuntu/server/20.04/stable/current/amd64/hvm/ebs-gp2/ami-id \
-#        --query Parameter.Value --output text
-#
-# 2. The deploy key secret itself. The NAME is already set below; the secret
-#    has to exist before the master boots. Gorak4u/cassandra-control-repo is
-#    PRIVATE, so it needs a credential to clone at first boot:
+# The deploy key secret. The NAME is already set below; the secret itself has
+# to exist before the master boots. Gorak4u/cassandra-control-repo is PRIVATE,
+# so it needs a credential to clone at first boot:
 #
 #      ssh-keygen -t ed25519 -f ./control-repo-key -N '' -C 'puppetmaster'
 #      # add ./control-repo-key.pub to the repo as a read-only Deploy Key
@@ -111,7 +104,13 @@ puppet_server = "pm1.nonprod.amex.internal"
 # The AMI must be Ubuntu 20.04 to match the inventory's os: ubuntu2004, which
 # selects the control repo's data/os/ layers. Nothing cross-checks the two, so
 # a 22.04 image here applies 20.04 package names and paths against it.
-ami_id = "REPLACE_ME" # see BEFORE YOU RUN #1
+#
+# Canonical's current us-east-1 focal image, read 2026-09-16. It moves with
+# every Canonical release; refresh it with
+#   aws ssm get-parameter --region us-east-1 --name /aws/service/canonical/ubuntu/server/20.04/stable/current/amd64/hvm/ebs-gp2/ami-id --query Parameter.Value --output text
+# A NEW ID DOES NOT REPLACE A RUNNING MASTER: instances.tf:225 has
+# ignore_changes = [ami], so changing this only affects instances built after.
+ami_id = "ami-0fb0b230890ccd1e6"
 
 root_volume_size_gb     = 50
 data_volume_size_gb     = 0 # the master keeps code and certs on root
