@@ -33,3 +33,13 @@ backend.hcl
 .state/cass*/
 .state/jenkins*/
 .state/*-facts.json
+
+# ---------------------------------------------------------------------------
+# Editor and OS noise
+# ---------------------------------------------------------------------------
+# macOS Finder metadata -- five of these were committed before this rule.
+.DS_Store
+
+# bin/*.py leave these behind whenever the checks are run locally.
+__pycache__/
+*.py[cod]

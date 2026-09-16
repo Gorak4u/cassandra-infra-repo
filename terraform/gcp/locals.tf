@@ -76,7 +76,7 @@ locals {
   control_repo_deploy_key_secret_id = (
     var.control_repo_deploy_key_secret_id != null ? var.control_repo_deploy_key_secret_id :
     try(local.inv.control_repo_deploy_key_secret_id,
-      try(local.defaults.control_repo_deploy_key_secret_id, null))
+    try(local.defaults.control_repo_deploy_key_secret_id, null))
   )
 
   wanted_products = length(var.products) > 0 ? var.products : keys(local.inv.products)
