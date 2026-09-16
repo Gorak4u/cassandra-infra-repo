@@ -8,7 +8,7 @@
 # there as an EC2 charge with no Cassandra on it.
 #
 #   cp amex-nonprod-dc_east.tfvars.example amex-nonprod-dc_east.tfvars
-#   # fill in the two REPLACE_ME values (see BEFORE YOU RUN below)
+#   # fill in ami_id, and create the deploy key secret (BEFORE YOU RUN below)
 #   ./bootstrap-account.sh amex-nonprod-dc_east.tfvars
 #
 # The copy is gitignored (*.tfvars), this template is not. Keep it that way.
@@ -37,8 +37,9 @@
 #        --name /aws/service/canonical/ubuntu/server/20.04/stable/current/amd64/hvm/ebs-gp2/ami-id \
 #        --query Parameter.Value --output text
 #
-# 2. control_repo_deploy_key_secret_id. Gorak4u/cassandra-control-repo is
-#    PRIVATE, so the master needs a credential to clone it at first boot:
+# 2. The deploy key secret itself. The NAME is already set below; the secret
+#    has to exist before the master boots. Gorak4u/cassandra-control-repo is
+#    PRIVATE, so it needs a credential to clone at first boot:
 #
 #      ssh-keygen -t ed25519 -f ./control-repo-key -N '' -C 'puppetmaster'
 #      # add ./control-repo-key.pub to the repo as a read-only Deploy Key
@@ -47,8 +48,15 @@
 #        --secret-string "$(cat ./control-repo-key)"
 #      shred -u ./control-repo-key
 #
-#    The secret's value must be the RAW PEM, not JSON. The master fetches it,
-#    clones once, then scrubs it from disk.
+#    The secret's value must be the RAW PEM, not JSON. The instance tag holds
+#    only the secret ID -- tags are readable via IMDS by anything on the box --
+#    and 10-metadata-aws.sh fetches the key with the instance role, which is
+#    why create_iam_role below scopes GetSecretValue to exactly this secret.
+#
+#    NOTE ON EGRESS: an SSH clone needs outbound 22 to github.com. If your
+#    egress policy blocks 22, keep the key and use github.com's 443 endpoint
+#    instead -- set control_repo_url to
+#    ssh://git@ssh.github.com:443/Gorak4u/cassandra-control-repo.git
 # ---------------------------------------------------------------------------
 
 # --- Identity of this slice ------------------------------------------------
@@ -145,7 +153,7 @@ attach_ssm_policy = true
 # an https:// URL ignores. A private repo over https would prompt for a
 # password at boot and the clone would fail.
 control_repo_url                  = "git@github.com:Gorak4u/cassandra-control-repo.git"
-control_repo_deploy_key_secret_id = "REPLACE_ME" # see BEFORE YOU RUN #2
+control_repo_deploy_key_secret_id = "amex/nonprod/control-repo-deploy-key"
 
 # "main", NOT the "production" default. puppet_environment is the BRANCH
 # cloned -- `git clone --branch "${PUPPET_ENVIRONMENT}"` -- and
