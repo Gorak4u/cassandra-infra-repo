@@ -114,6 +114,30 @@ load_instance_metadata() {
     "${imds}/meta-data/ami-id" 2>/dev/null)"
   export PROVISIONER='terraform/aws'
 
+  # --- The aws CLI -------------------------------------------------------
+  # Both secrets below are fetched with it, and it is NOT a given: Amazon Linux
+  # ships it, Ubuntu's official cloud images do not, and this estate's
+  # inventory says os: ubuntu2004. Installed ONCE here, ahead of both fetches.
+  #
+  # An earlier fix installed it inline at the deploy key instead. That left the
+  # join secret -- fetched thirty lines above it -- still guarded by a bare
+  # `command -v aws` that was false, so the node booted with no
+  # challengePassword and nothing but a warning to say so. Same bug, two call
+  # sites, one of them fixed: hence a function, called before either.
+  ensure_aws_cli() {
+    command -v aws >/dev/null 2>&1 && return 0
+    log 'aws CLI absent; installing it to fetch secrets'
+    if command -v apt-get >/dev/null 2>&1; then
+      DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1
+      DEBIAN_FRONTEND=noninteractive apt-get install -y -qq awscli >/dev/null 2>&1
+    elif command -v dnf >/dev/null 2>&1; then
+      dnf install -y -q awscli >/dev/null 2>&1
+    elif command -v yum >/dev/null 2>&1; then
+      yum install -y -q awscli >/dev/null 2>&1
+    fi
+    command -v aws >/dev/null 2>&1
+  }
+
   # --- The join secret ---------------------------------------------------
   # NOT a tag. Tags are readable by anything that can describe the instance,
   # and this value is what lets a host join the estate.
@@ -128,14 +152,14 @@ load_instance_metadata() {
   if [[ -n "${secret_id}" ]]; then
     region="$(curl -sf -H "X-aws-ec2-metadata-token: ${token}" --max-time 5 \
       "${imds}/meta-data/placement/region" 2>/dev/null)"
-    if command -v aws >/dev/null 2>&1; then
+    if ensure_aws_cli; then
       export JOIN_SECRET="$(aws secretsmanager get-secret-value \
         --region "${region}" --secret-id "${secret_id}" \
         --query SecretString --output text 2>/dev/null)"
       [[ -n "${JOIN_SECRET:-}" ]] ||
         warn "could not read secret ${secret_id} -- check the instance profile's secretsmanager:GetSecretValue permission"
     else
-      warn 'aws CLI not present in this AMI; cannot fetch the join secret'
+      warn 'aws CLI not present and could not be installed; cannot fetch the join secret'
     fi
   else
     log 'no join_secret_id tag; proceeding without a challengePassword'
@@ -156,44 +180,18 @@ load_instance_metadata() {
     local dk_region
     dk_region="$(curl -sf -H "X-aws-ec2-metadata-token: ${token}" --max-time 5 \
       "${imds}/meta-data/placement/region" 2>/dev/null)"
-    # The AWS CLI is NOT a given, and assuming it was cost a whole build.
-    # Amazon Linux ships it; Ubuntu's official cloud images do not, and this
-    # estate's inventory says os: ubuntu2004. So on the AMI this stack actually
-    # launches, `command -v aws` was false, the deploy key was never fetched,
-    # and the failure surfaced two fragments later as
-    #
-    #   Cloning into '/etc/puppetlabs/code/environments/main'...
-    #   Host key verification failed.
-    #
-    # which reads as a known_hosts problem and is nothing of the sort: with no
-    # key, 30-role-puppetmaster.sh never sets GIT_SSH_COMMAND, so the clone ran
-    # without the -o StrictHostKeyChecking=accept-new that would have accepted
-    # github.com's host key.
-    #
-    # Installed here rather than in 20-common.sh's prerequisites because this
-    # fragment runs FIRST -- prerequisites do not exist yet when the key is
-    # needed. OS detection is repeated for the same reason: OS_FAMILY is set in
-    # 20-common.sh, which has not run.
-    if ! command -v aws >/dev/null 2>&1; then
-      log 'aws CLI absent; installing it to fetch the control repo deploy key'
-      if command -v apt-get >/dev/null 2>&1; then
-        DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1
-        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq awscli >/dev/null 2>&1
-      elif command -v dnf >/dev/null 2>&1; then
-        dnf install -y -q awscli >/dev/null 2>&1
-      elif command -v yum >/dev/null 2>&1; then
-        yum install -y -q awscli >/dev/null 2>&1
-      fi
-    fi
-
-    if command -v aws >/dev/null 2>&1; then
+    # ensure_aws_cli is defined above, with the reasoning. Without the key
+    # 30-role-puppetmaster.sh never sets GIT_SSH_COMMAND and the clone fails as
+    # "Host key verification failed", which reads as a known_hosts problem and
+    # is nothing of the sort.
+    if ensure_aws_cli; then
       export CONTROL_REPO_DEPLOY_KEY="$(aws secretsmanager get-secret-value \
         --region "${dk_region}" --secret-id "${deploy_key_secret_id}" \
         --query SecretString --output text 2>/dev/null)"
       [[ -n "${CONTROL_REPO_DEPLOY_KEY:-}" ]] ||
         warn "could not read deploy key ${deploy_key_secret_id} -- check the instance profile's GetSecretValue permission"
     else
-      warn 'aws CLI not in PATH and could not be installed; cannot fetch the control repo deploy key'
+      warn 'aws CLI not present and could not be installed; cannot fetch the control repo deploy key'
     fi
   fi
 
