@@ -63,6 +63,20 @@ elif [[ -n "${CONTROL_REPO_URL:-}" ]]; then
   log "no repo mounted; cloning ${CONTROL_REPO_URL}"
   rm -rf "${ENV_DIR}"
 
+  # An SSH remote with no key is a guaranteed failure, and left to itself it
+  # fails as the WRONG error. Without CONTROL_REPO_DEPLOY_KEY the block below
+  # never runs, so GIT_SSH_COMMAND is unset, so git uses plain ssh with default
+  # host checking and the clone dies with
+  #
+  #   Host key verification failed.
+  #
+  # -- which sends you to known_hosts and StrictHostKeyChecking, neither of
+  # which is the problem. The problem is that there is no key. Said here, by
+  # name, before a single git command runs.
+  if [[ "${CONTROL_REPO_URL}" =~ ^(git@|ssh://) ]] && [[ -z "${CONTROL_REPO_DEPLOY_KEY:-}" ]]; then
+    die "no deploy key for ${CONTROL_REPO_URL}. CONTROL_REPO_DEPLOY_KEY is empty, so this clone would fail as a host key error. Check, in order: the control_repo_deploy_key_secret_id tag on this instance, the instance profile's secretsmanager:GetSecretValue on that secret, and whether the aws CLI is installed (Ubuntu images do not ship it)."
+  fi
+
   # Private repos: write the deploy key before the clone and scrub it after.
   # GIT_SSH_COMMAND scopes the key to this process only -- it never touches the
   # SSH agent, so it cannot be used by any other process on the node.
