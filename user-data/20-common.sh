@@ -239,6 +239,25 @@ puppet_environment: '${PUPPET_ENVIRONMENT}'
 FACTS
 chmod 0644 /etc/puppetlabs/facter/facts.d/instance.yaml
 
+# --- 3b. Neutralise the ec2_userdata fact (AWS only) ----------------------
+# instances.tf sends user-data as base64gzip() -- the master's script is ~31 KB
+# and EC2 caps plain user_data at 16 KB. cloud-init decompresses it, so the boot
+# is fine, but IMDS still serves the raw gzip at /latest/user-data and Facter
+# publishes those bytes as `ec2_userdata`. Puppet serialises the fact set to
+# JSON before asking for a catalogue, gzip is not UTF-8, so every agent run dies
+# with "Could not render to json: source sequence is illegal/malformed utf-8"
+# -- a message naming neither user-data nor gzip.
+#
+# External facts outrank built-in ones in Facter, so defining the name here
+# replaces the value. Better than blocklisting the EC2 group in facter.conf:
+# that also drops the useful ec2_metadata, and a bad facter.conf breaks Facter.
+if [[ "${PROVISIONER:-}" == 'terraform/aws' ]]; then
+  log 'overriding ec2_userdata (gzipped user-data is not valid UTF-8)'
+  printf -- "---\n# MANAGED BY USER-DATA: see 20-common.sh. Empty on purpose.\nec2_userdata: ''\n" \
+    > /etc/puppetlabs/facter/facts.d/ec2-userdata-override.yaml
+  chmod 0644 /etc/puppetlabs/facter/facts.d/ec2-userdata-override.yaml
+fi
+
 # --- 4. Identity as CSR EXTENSION REQUESTS --------------------------------
 # THIS is the part that matters. These extensions are written into the
 # certificate signing request, the master's autosign policy validates them

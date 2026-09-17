@@ -235,9 +235,13 @@ resource "aws_instance" "node" {
       # length of ceil(16384 * 4 / 3) = 21846.
       #
       # Concrete measurements at time of writing:
-      #   puppetmaster  gzipped 13848 B  |  base64 18465 chars  --> fits
-      #   cassandra     gzipped 12463 B  |  base64 16621 chars  --> fits
-      #   jenkins       gzipped 11721 B  |  base64 15629 chars  --> fits
+      #   puppetmaster  gzipped 15645 B  |  base64 20860 chars  --> fits
+      #   cassandra     gzipped 13391 B  |  base64 17856 chars  --> fits
+      #   jenkins       gzipped 12661 B  |  base64 16884 chars  --> fits
+      #
+      # The master is the one to watch: 739 B under AWS's cap. Two short
+      # comment blocks added here took it from 1590 B of headroom to 193 and
+      # had to be cut back, so re-measure after editing any shared fragment.
       #
       # A margin under the limit rather than at it. When this trips, TRIM
       # comments in the affected fragment before adding S3 staging complexity

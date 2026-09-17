@@ -229,6 +229,23 @@ wait_for_port localhost "${PUPPET_PORT}" 300 "puppetserver on localhost:${PUPPET
 # --waitforcert: the master autosigns its own CSR via the policy validator, and
 # that takes a moment. Without it the run fails outright on the first attempt
 # rather than waiting the couple of seconds needed.
+# --- Make the master resolvable to itself ---------------------------------
+# puppet.conf has `server = ${PUPPET_SERVER}` and the agent connects by NAME.
+# The estate domain is private and terraform/aws/ creates no zone for it, so the
+# run dies at "getaddrinfo: Name or service not known" before reaching TLS. On
+# this host that name IS this machine, and a master should reach its own
+# puppetserver regardless of estate DNS. By name, not by IP, so the server
+# certificate's CN/SAN check still means something.
+#
+# This does NOTHING for agent nodes: they resolve ${PUPPET_SERVER} through DNS
+# and cannot know the master's address. The estate still needs a Route 53
+# private hosted zone with an A record for the master. None exists yet.
+if ! getent hosts "${PUPPET_SERVER}" >/dev/null 2>&1; then
+  self_ip="${INSTANCE_IP:-127.0.0.1}"
+  log "no DNS for ${PUPPET_SERVER}; adding hosts entry ${self_ip} ${PUPPET_SERVER}"
+  printf '%s %s %s\n' "${self_ip}" "${PUPPET_SERVER}" "${PUPPET_SERVER%%.*}" >> /etc/hosts
+fi
+
 log 'running the agent against the newly built master'
 agent_ok='no'
 for attempt in 1 2 3; do
