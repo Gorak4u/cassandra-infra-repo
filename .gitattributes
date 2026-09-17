@@ -1,0 +1,47 @@
+# ===========================================================================
+# Line endings
+# ===========================================================================
+# These files are READ AND EXECUTED as shell, not just edited. terraform's
+# file() reads the user-data fragments verbatim and hands them to an EC2
+# instance as its boot script, so a CRLF checkout does not produce a cosmetic
+# diff -- it produces a node that fails to boot with
+#
+#   line 56: $'\r': command not found
+#   line 84: syntax error near unexpected token `$'{\r''
+#
+# and the only place that message appears is the instance's cloud-init log.
+#
+# A Windows clone with core.autocrlf=true (the Windows default) converts every
+# text file on checkout. Pinning eol=lf here overrides that per path, for
+# everyone, without asking each person to configure their client.
+#
+# ORDER MATTERS: the LAST matching pattern wins, so the catch-all goes first
+# and the specific rules after it. With the catch-all last, `git check-attr`
+# reports `text: auto` for every .sh file and the explicit rules below do
+# nothing at all.
+
+# Normalise to LF in the repo; let git decide per file whether it is text.
+* text=auto eol=lf
+
+# Executed as shell. Non-negotiable.
+*.sh           text eol=lf
+*.bash         text eol=lf
+provision.sh   text eol=lf
+jenkins-run.sh text eol=lf
+
+# Parsed by systemd, which is equally unforgiving.
+*.service text eol=lf
+
+# Read by terraform's file()/yamldecode, by Puppet, and by ruby. YAML tolerates
+# CRLF, but a value ending in \r silently carries it into a certname or a tag.
+*.yaml text eol=lf
+*.yml  text eol=lf
+*.tf   text eol=lf
+*.epp  text eol=lf
+*.rb   text eol=lf
+
+# The pinned Forge tarball in .state/cache/ is checked in deliberately (see
+# .gitignore). Marked binary so no eol rule above can reach it -- a
+# "normalised" tarball is a corrupt tarball. Same for any key material.
+*.tar.gz binary
+*.pem    binary

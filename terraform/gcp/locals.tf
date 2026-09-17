@@ -301,12 +301,25 @@ locals {
   }
 
   startup_script = {
-    for name, n in local.nodes : name => join("\n", [
+    # replace() strips carriage returns, and it is not paranoia. A checkout on
+    # Windows with core.autocrlf=true rewrites these fragments with CRLF, file()
+    # reads them verbatim, and the node then boots into
+    #
+    #   line 56: $'\r': command not found
+    #   line 84: syntax error near unexpected token `$'{\r''
+    #
+    # .gitattributes pins these files to LF so it should not arise, but that
+    # only governs a checkout of THIS repo with THAT file present. A tarball, an
+    # editor that "helpfully" converts on save, or a clone taken before the
+    # attribute landed all reach here the same way -- and the failure surfaces
+    # on a booting instance rather than at plan time, which is the expensive
+    # place to find it. One function call makes the whole class impossible.
+    for name, n in local.nodes : name => replace(join("\n", [
       file("${local.userdata_dir}/00-prelude.sh"),
       file("${local.userdata_dir}/10-metadata-gcp.sh"),
       file("${local.userdata_dir}/20-common.sh"),
       file("${local.userdata_dir}/${local.role_fragment[n.role]}"),
-    ])
+    ]), "\r\n", "\n")
   }
 
   # --- Resolved identifiers ----------------------------------------------
