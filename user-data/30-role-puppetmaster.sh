@@ -116,7 +116,16 @@ elif [[ -n "${CONTROL_REPO_URL:-}" ]]; then
   #   2. Puppet's gem environment -- used on GCP and other unconstrained
   #      platforms. Requires internet access to rubygems.org or an internal
   #      gem mirror (Cloud NAT satisfies this on GCP).
-  local r10k_bin=''
+  # NOT `local`: this fragment runs at top level, not inside a function, and
+  # bash refuses it there --
+  #
+  #   /var/lib/cloud/instance/scripts/part-001: line 768:
+  #   local: can only be used in a function
+  #
+  # Harmless in the end, because the assignments below set it as a global
+  # anyway, but it printed an error into the boot log on every single run and
+  # sent whoever read it looking for a bug that was not there.
+  r10k_bin=''
   if command -v r10k >/dev/null 2>&1; then
     r10k_bin='r10k'
   elif [[ -x /opt/puppetlabs/puppet/bin/r10k ]]; then
