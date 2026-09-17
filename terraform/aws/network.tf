@@ -204,8 +204,15 @@ resource "aws_vpc_security_group_egress_rule" "all" {
 resource "aws_vpc_security_group_ingress_rule" "puppet" {
   count = var.create_security_group ? 1 : 0
 
-  security_group_id            = aws_security_group.node[0].id
-  description                  = "Puppet agent -> Puppet Server"
+  security_group_id = aws_security_group.node[0].id
+
+  # "to", not "->". EC2 restricts rule descriptions to
+  #     a-zA-Z0-9. _-:/()#,@[]+=&;{}!$*
+  # and '>' is not in that set, so AuthorizeSecurityGroupIngress rejected this
+  # rule with "Invalid rule description" while every other rule in this file
+  # was created. LocalStack does not validate the field, which is why
+  # test-with-localstack.sh never caught it.
+  description                  = "Puppet agent to Puppet Server"
   from_port                    = local.ports.puppet
   to_port                      = local.ports.puppet
   ip_protocol                  = "tcp"
