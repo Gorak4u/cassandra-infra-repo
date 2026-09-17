@@ -6,10 +6,10 @@
 # Sequence:
 #   1. Create the Terraform state bucket        (versioning, KMS, no-public)
 #   2. Create the join secret in Secrets Manager (random 32-byte)
-#   3. Print the SHA-256 to paste into Hiera
-#   4. Create the Route 53 record for the master
+#   3. Create the SSH key pair, if key_name is set (private half to ~/.ssh)
+#   4. Print the SHA-256 to paste into Hiera
 #   5. Apply the Terraform stack, PUPPETMASTER ONLY
-#   6. Wait for the master's user-data to finish
+#   6. Create the Route 53 record and wait for user-data to finish
 #
 # After this exits successfully, do the eyaml key ceremony on the master
 # (guides/13-secrets-in-production.md) and then apply the Cassandra stack.
@@ -68,6 +68,7 @@ REGION="$(extract region)"
 DNS_DOMAIN="$(extract dns_domain)"
 PUPPET_SERVER="$(extract puppet_server)"
 JOIN_SECRET_NAME="$(extract join_secret_id)"
+KEY_NAME="$(extract key_name)"
 
 STATE_BUCKET="${CUSTOMER}-${ENVIRONMENT}-tfstate"
 
@@ -83,7 +84,7 @@ info "puppet server: ${PUPPET_SERVER}"
 # ---------------------------------------------------------------------------
 # 1. State bucket
 # ---------------------------------------------------------------------------
-step '1/5  Terraform state bucket'
+step '1/6  Terraform state bucket'
 if [[ "${LOCALSTACK_MODE}" == 'yes' ]]; then
   aws_ s3api create-bucket --bucket "${STATE_BUCKET}" >/dev/null 2>&1 || true
 else
@@ -94,7 +95,7 @@ ok "s3://${STATE_BUCKET}"
 # ---------------------------------------------------------------------------
 # 2. Join secret
 # ---------------------------------------------------------------------------
-step '2/5  Estate join secret'
+step '2/6  Estate join secret'
 if aws_ secretsmanager describe-secret --secret-id "${JOIN_SECRET_NAME}" --region "${REGION}" >/dev/null 2>&1; then
   ok "already exists"
   JOIN_SECRET_VALUE="$(aws_ secretsmanager get-secret-value \
@@ -118,9 +119,47 @@ info "ARN:    ${JOIN_SECRET_ARN}"
 info "SHA256: ${JOIN_SECRET_SHA}"
 
 # ---------------------------------------------------------------------------
-# 3. Hiera update prompt
+# 3. SSH key pair
 # ---------------------------------------------------------------------------
-step '3/5  Hiera update required (paste this into the master cluster file)'
+# Same create-if-absent contract as the bucket and the secret above. Skipped
+# entirely when key_name is unset, which is the SSM-only posture.
+#
+# AWS returns the private half ONCE, at creation, and stores only the public
+# half. So if the key pair exists in AWS but the .pem is not here, the private
+# key is gone -- this cannot recreate it, and says so rather than pretending.
+# Deleting the key pair and making a new one then means replacing the instance,
+# because key_name is not in the aws_instance ignore_changes list.
+# ---------------------------------------------------------------------------
+step '3/6  SSH key pair'
+if [[ -z "${KEY_NAME}" ]]; then
+  ok 'key_name unset -- skipping (reach the node with: aws ssm start-session)'
+else
+  KEY_FILE="${HOME}/.ssh/${KEY_NAME}.pem"
+  if aws_ ec2 describe-key-pairs --key-names "${KEY_NAME}" --region "${REGION}" >/dev/null 2>&1; then
+    if [[ -f "${KEY_FILE}" ]]; then
+      ok "already exists (${KEY_FILE})"
+    else
+      echo "WARN: key pair '${KEY_NAME}' exists in AWS but ${KEY_FILE} is missing."
+      echo "      AWS hands out the private half only at creation, so it cannot be"
+      echo "      recovered. ssh will not work until you either restore that file or"
+      echo "      delete the key pair, pick a new key_name, and rebuild the instance."
+    fi
+  else
+    install -d -m 0700 "${HOME}/.ssh"
+    umask 077
+    aws_ ec2 create-key-pair \
+      --key-name "${KEY_NAME}" \
+      --region "${REGION}" \
+      --query KeyMaterial --output text > "${KEY_FILE}" || die 'create-key-pair failed'
+    chmod 400 "${KEY_FILE}"
+    ok "created (${KEY_FILE})"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 4. Hiera update prompt
+# ---------------------------------------------------------------------------
+step '4/6  Hiera update required (paste this into the master cluster file)'
 
 readonly PM_HIERA="../../../cassandra-control-repo/data/customers/${CUSTOMER}/${ENVIRONMENT}/products/puppetmaster/clusters/pm.yaml"
 cat <<HIERA_MSG
@@ -141,9 +180,9 @@ if [[ -f "${HERE}/${PM_HIERA}" ]] && ! grep -q "${JOIN_SECRET_SHA}" "${HERE}/${P
 fi
 
 # ---------------------------------------------------------------------------
-# 4. Terraform init + apply, master only
+# 5. Terraform init + apply, master only
 # ---------------------------------------------------------------------------
-step '4/5  Building the Puppet master'
+step '5/6  Building the Puppet master'
 cd "${HERE}"
 
 cat > backend.hcl <<EOF
@@ -177,9 +216,9 @@ terraform apply -input=false -auto-approve \
 ok 'master created'
 
 # ---------------------------------------------------------------------------
-# 5. Route 53 record + wait
+# 6. Route 53 record + wait
 # ---------------------------------------------------------------------------
-step '5/5  DNS + wait for master convergence'
+step '6/6  DNS + wait for master convergence'
 
 # Get the master's private IP from Terraform state
 MASTER_IP="$(terraform state show 'aws_instance.node["pm1"]' 2>/dev/null | grep 'private_ip' | head -1 | awk '{print $3}' | tr -d '"')"
