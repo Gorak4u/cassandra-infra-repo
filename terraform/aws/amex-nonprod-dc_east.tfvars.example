@@ -123,25 +123,29 @@ disable_api_termination = true
 #   InvalidParameterCombination: The specified instance type is not eligible
 #   for Free Tier
 #
-# The only free-tier compute is t2.micro / t3.micro, at 1 GiB. Uncommenting
-# the line below launches the master there, and the deal is worth stating
-# plainly before you take it:
+# c7i-flex.large is eligible and is the one to reach for: 2 vCPU / 4 GiB. Half
+# the RAM of the m6i.large this inventory's sizing 'medium' asks for, but the
+# heap the control repo actually sets fits with room to spare. Against
+# check-sizing.py's model for this product,
 #
-#   check-sizing.py models this product as
-#       required = java_heap + max(512 MB, java_heap * 0.15)
-#   so 1024 MB of machine caps profile_puppetmaster_pfpt::java_heap at 512m,
-#   and that 512 MB of modelled overhead is JVM ONLY -- it does not include
-#   the kernel, systemd, or the master's own Puppet agent. Ubuntu alone wants
-#   200-300 MB. The arithmetic does not close.
+#   required = java_heap + max(512 MB, java_heap * 0.15)
 #
-# Expect puppetserver to be OOM-killed during its first catalogue compile,
-# which surfaces as "Connection refused ... port 8140" rather than as an
-# out-of-memory error. Adding swap makes it survivable but slow -- see the
-# note in the run instructions.
+#   java_heap  required   fits in 4096 MB?
+#   1g         1536 MB    yes, 2.5 GiB spare   <- what pm.yaml sets today
+#   2g         2560 MB    yes
+#   3g         3584 MB    yes, tight
 #
-# For free local testing that actually works, provision.sh builds the same
-# estate as Docker containers with local_mem 3072m and no AWS account at all.
-# instance_type_override = "t3.micro"
+# So leave the heap alone. Do NOT reach for t2.micro / t3.micro instead: at
+# 1 GiB they cap the heap at 512m, that 512 MB of modelled overhead is JVM
+# only -- no kernel, no systemd, no agent -- and puppetserver gets OOM-killed
+# during the first catalogue compile, which presents as "Connection refused
+# ... port 8140" rather than as an out-of-memory error.
+#
+# NOTE: check-sizing.py validates the heap against the INVENTORY's ram_mb
+# (8192 for 'medium'), not against an override set here, so it cannot catch a
+# heap that outgrows this machine. The table above is the check that matters
+# while an override is in force.
+instance_type_override = "c7i-flex.large"
 
 # No key_name: reach the box with `aws ssm start-session --target <id>`.
 # attach_ssm_policy defaults true, and bootstrap-account.sh needs SSM anyway
