@@ -116,6 +116,33 @@ root_volume_size_gb     = 50
 data_volume_size_gb     = 0 # the master keeps code and certs on root
 disable_api_termination = true
 
+# --- AWS Free Plan accounts ------------------------------------------------
+# An account on the Free Plan refuses any instance type that is not free-tier
+# eligible, and m6i.large is not:
+#
+#   InvalidParameterCombination: The specified instance type is not eligible
+#   for Free Tier
+#
+# The only free-tier compute is t2.micro / t3.micro, at 1 GiB. Uncommenting
+# the line below launches the master there, and the deal is worth stating
+# plainly before you take it:
+#
+#   check-sizing.py models this product as
+#       required = java_heap + max(512 MB, java_heap * 0.15)
+#   so 1024 MB of machine caps profile_puppetmaster_pfpt::java_heap at 512m,
+#   and that 512 MB of modelled overhead is JVM ONLY -- it does not include
+#   the kernel, systemd, or the master's own Puppet agent. Ubuntu alone wants
+#   200-300 MB. The arithmetic does not close.
+#
+# Expect puppetserver to be OOM-killed during its first catalogue compile,
+# which surfaces as "Connection refused ... port 8140" rather than as an
+# out-of-memory error. Adding swap makes it survivable but slow -- see the
+# note in the run instructions.
+#
+# For free local testing that actually works, provision.sh builds the same
+# estate as Docker containers with local_mem 3072m and no AWS account at all.
+# instance_type_override = "t3.micro"
+
 # No key_name: reach the box with `aws ssm start-session --target <id>`.
 # attach_ssm_policy defaults true, and bootstrap-account.sh needs SSM anyway
 # to wait for user-data to finish.
