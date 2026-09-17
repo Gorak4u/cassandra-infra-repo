@@ -147,9 +147,36 @@ disable_api_termination = true
 # while an override is in force.
 instance_type_override = "c7i-flex.large"
 
-# No key_name: reach the box with `aws ssm start-session --target <id>`.
-# attach_ssm_policy defaults true, and bootstrap-account.sh needs SSM anyway
-# to wait for user-data to finish.
+# --- ssh and scp -----------------------------------------------------------
+# The key pair for real ssh/scp. Create it first, or the apply fails with
+# InvalidKeyPair.NotFound:
+#
+#   aws ec2 create-key-pair --region us-east-1 \
+#     --key-name amex-nonprod-puppetmaster \
+#     --query KeyMaterial --output text > ~/.ssh/amex-nonprod-puppetmaster.pem
+#   chmod 400 ~/.ssh/amex-nonprod-puppetmaster.pem
+#
+# THIS DOES NOT OPEN PORT 22. The node has no public IP and sits in a private
+# subnet, and network.tf opens 8140, 7000-7001, 7199 and 9042 -- not 22. ssh
+# reaches it through the SSM tunnel instead, with this in ~/.ssh/config:
+#
+#   Host i-* mi-*
+#     User ubuntu
+#     IdentityFile ~/.ssh/amex-nonprod-puppetmaster.pem
+#     ProxyCommand sh -c "aws ssm start-session --target %h \
+#       --document-name AWS-StartSSH-Session --parameters 'portNumber=%p'"
+#
+#   ssh i-0123456789abcdef0
+#   scp i-0123456789abcdef0:/var/log/puppetlabs/puppetserver/puppetserver.log .
+#
+# The SSM agent connects to 127.0.0.1:22 on the instance, so the security
+# group never sees the traffic and there is nothing to expose. Authorisation
+# is ssm:StartSession in IAM -- scope it by the pp_environment tag to decide
+# who reaches nonprod and who reaches prod.
+#
+# CHANGING THIS LATER REPLACES THE INSTANCE: key_name is not in the
+# ignore_changes list at instances.tf:225. Set it before the first apply.
+key_name = "amex-nonprod-puppetmaster"
 
 # ===========================================================================
 # NETWORK -- created, not referenced
