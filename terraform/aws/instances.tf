@@ -10,6 +10,28 @@
 resource "aws_instance" "node" {
   for_each = local.nodes
 
+  # The instance's only implicit network dependency is subnet_id -> aws_subnet,
+  # so without this Terraform launches it IN PARALLEL with the NAT gateway,
+  # which takes a minute or two to reach Available. user-data starts running
+  # seconds after boot, hits apt-get, and finds no default route:
+  #
+  #   Cannot initiate the connection to ...:80 - connect (101: Network is
+  #   unreachable) / connection timed out
+  #   E: Unable to locate package iptables-persistent
+  #   FATAL could not install prerequisites
+  #
+  # Everything else in that boot fails downstream of it -- no aws CLI, so no
+  # join secret and no deploy key either. It is a RACE, so it does not fail
+  # every time: an earlier build of this same config came up fine, which is the
+  # worst property a bug like this can have.
+  #
+  # Depending on the association rather than the gateway chains the whole path:
+  # the association needs the route table, the route table needs the NAT
+  # gateway id, and the provider already waits for the gateway to be Available
+  # before it is considered created. No-ops when create_vpc = false, where the
+  # resource has count 0 and the caller owns the routing.
+  depends_on = [aws_route_table_association.private]
+
   ami           = var.ami_id
   instance_type = each.value.instance_type
   subnet_id     = each.value.subnet_id
