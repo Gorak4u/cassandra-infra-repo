@@ -251,6 +251,28 @@ resource "aws_instance" "node" {
     }
 
     precondition {
+      # A deploy key ID with no matching ARN is the quietest way to lose a
+      # build. iam.tf gives the deploy-key policy count = 0 when the ARN is
+      # null, so the plan is clean, the instance boots, and ~10 minutes later
+      # user-data fails with AccessDeniedException on GetSecretValue -- which
+      # reads as a Secrets Manager problem, not a missing tfvars line.
+      #
+      # This is not hypothetical. The ARN is deliberately absent from
+      # amex-nonprod-dc_east.tfvars.example because it carries the account id
+      # and this repo is public, so anyone who regenerates their tfvars from
+      # the template drops it. That has already cost one build.
+      #
+      # Skipped when create_iam_role = false: the profile is then supplied
+      # externally and its permissions are not this module's business.
+      condition = (
+        local.control_repo_deploy_key_secret_id == null
+        || !var.create_iam_role
+        || var.control_repo_deploy_key_secret_arn != null
+      )
+      error_message = "control_repo_deploy_key_secret_id is set but control_repo_deploy_key_secret_arn is not, so no policy grants GetSecretValue on it and the control repo clone will fail at boot. Add the ARN to your tfvars: aws secretsmanager describe-secret --secret-id <secret-id> --region <region> --query ARN --output text"
+    }
+
+    precondition {
       # An instance with no master boots, installs the agent, and then sits
       # there unconfigured -- an EC2 charge with no Cassandra on it and nothing
       # failed. Cheaper to reject at plan time.
