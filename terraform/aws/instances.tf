@@ -295,6 +295,15 @@ resource "aws_instance" "node" {
     }
 
     precondition {
+      # A cluster named an availability zone this VPC has no subnet in, so
+      # locals.tf could not resolve it to one. Caught here rather than left to
+      # the API, which would reject the launch with "InvalidSubnetID.NotFound"
+      # naming the sentinel string and nothing about which cluster asked.
+      condition     = each.value.subnet_id != "AZ-NOT-IN-THIS-VPC"
+      error_message = "${each.value.certname} is in a cluster whose availability_zones name a zone with no subnet in this VPC. Add that zone to var.availability_zones (create_vpc builds one subnet per zone, in list order), or drop the cluster's availability_zones to fall back to round-robin over every subnet. Note that per-cluster zones need create_vpc = true: with caller-supplied subnet_ids this module cannot tell which zone a subnet is in."
+    }
+
+    precondition {
       # An instance with no master boots, installs the agent, and then sits
       # there unconfigured -- an EC2 charge with no Cassandra on it and nothing
       # failed. Cheaper to reject at plan time.

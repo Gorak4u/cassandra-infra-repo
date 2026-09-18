@@ -71,6 +71,36 @@ variable "clusters" {
 # ---------------------------------------------------------------------------
 # Naming
 # ---------------------------------------------------------------------------
+variable "create_dns_zone" {
+  description = <<-EOT
+    Create a Route 53 PRIVATE hosted zone for dns_domain, associated with this
+    VPC, and an A record per node.
+
+    Required for any estate with more than a master. Agents reach their master
+    as `server = <certname>` and serialized clusters wait on the previous node
+    BY NAME, so without a zone both fail at getaddrinfo before any connection
+    is attempted. The master alone gets by without it, via the /etc/hosts entry
+    30-role-puppetmaster.sh writes for itself.
+
+    Ignored when create_vpc = false -- bring your own zone via dns_zone_id.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "dns_zone_id" {
+  description = <<-EOT
+    Id of an EXISTING Route 53 zone to write node records into, instead of
+    creating one. Use this when DNS for the estate's domain is owned by another
+    team or another stack.
+
+    Takes precedence over create_dns_zone: set this and the records are written
+    to your zone, and no zone is created here.
+  EOT
+  type        = string
+  default     = null
+}
+
 variable "dns_domain" {
   description = <<-EOT
     Certname suffix. Defaults to the inventory's `domain`.

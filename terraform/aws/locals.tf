@@ -113,6 +113,9 @@ locals {
           name_prefix = try(dcspec.name_prefix, cspec.name_prefix, cluster)
           seed_count  = try(dcspec.seed_count, cspec.seed_count, 0)
           racks       = try(dcspec.racks, cspec.racks, ["rack1"])
+          # Optional per-cluster AZ list; [] means "use the stack's
+          # var.availability_zones in list order". See the note on subnet_id.
+          azs = try(dcspec.availability_zones, cspec.availability_zones, [])
           sizing      = try(dcspec.sizing, cspec.sizing)
           os          = try(dcspec.os, cspec.os, local.default_os)
           # "" rather than null for "not set": an all-null column has no type.
@@ -139,6 +142,7 @@ locals {
           name_prefix = try(cspec.name_prefix, cluster)
           seed_count  = try(cspec.seed_count, 0)
           racks       = try(cspec.racks, ["rack1"])
+          azs         = try(cspec.availability_zones, [])
           sizing      = cspec.sizing
           os          = try(cspec.os, local.default_os)
           role        = try(cspec.role, "")
@@ -189,7 +193,25 @@ locals {
         # precondition can produce a readable message. The placeholder keeps
         # evaluation alive just long enough for aws_instance.node's
         # precondition to say what is actually wrong.
-        subnet_id = element(local.subnet_ids_safe, i - 1)
+        # Round-robin either way: `element` indexes MODULO the list length, so
+        # six nodes over three zones land a,b,c,a,b,c and rack N lines up with
+        # zone N. That wrap is the whole mechanism -- there is no per-node
+        # placement anywhere in this repo.
+        #
+        # With a per-cluster `availability_zones` the node picks its ZONE first
+        # and then the subnet in it, so the cluster's placement no longer
+        # depends on the order of var.availability_zones. Without one it falls
+        # back to indexing the stack's subnet list directly, which is the
+        # original behaviour and what every other product still does.
+        #
+        # The lookup default is a sentinel rather than an error: an unknown key
+        # would fail during locals evaluation, which happens BEFORE any
+        # precondition can run, and the message would name neither the cluster
+        # nor the zone. aws_instance.node's precondition turns it into a
+        # readable one.
+        subnet_id = length(d.azs) > 0 ? lookup(
+          local.subnet_by_az, element(d.azs, i - 1), "AZ-NOT-IN-THIS-VPC"
+        ) : element(local.subnet_ids_safe, i - 1)
 
         sizing = d.sizing
         instance_type = coalesce(
@@ -280,6 +302,17 @@ locals {
 
   # See the note on subnet_id in node_list above.
   subnet_ids_safe = length(local.subnet_ids) > 0 ? local.subnet_ids : ["SUBNETS-NOT-CONFIGURED"]
+
+  # Zone -> subnet, for clusters that name their own availability_zones.
+  #
+  # EMPTY when create_vpc = false, and that is not a gap that can be closed
+  # here: subnet_ids are then opaque strings supplied by the caller, and this
+  # module has no data source to ask which zone each one is in. A cluster that
+  # names zones in that mode gets the sentinel and a precondition failure
+  # telling it so, which beats placing nodes in the wrong zones silently.
+  subnet_by_az = var.create_vpc ? {
+    for s in aws_subnet.this : s.availability_zone => s.id
+  } : {}
 
   security_group_ids = var.create_security_group ? (
     concat([aws_security_group.node[0].id], var.security_group_ids)

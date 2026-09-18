@@ -111,6 +111,21 @@ products:
   cassandra:
     clusters:
       core:
+        # WHICH MASTER THIS CLUSTER USES.
+        #
+        # Stated here, at the cluster level, rather than left to resolve. The
+        # precedence chain is datacentre > cluster > product > environment file
+        # > var.puppet_server in tfvars, and until now this estate named it at
+        # none of them -- every node fell through to the tfvars fallback, which
+        # is a property of the STACK rather than a statement about this
+        # cluster. Both produce the same answer while there is one master, and
+        # they stop agreeing the moment there is a second.
+        #
+        # Pinning it at the cluster level is also what makes the intent
+        # reviewable: "core talks to pm1" is now in the file that defines core,
+        # not implied by a variable in an operator's tfvars.
+        puppet_server: 'pm1.nonprod.amex.internal'
+
         # A MULTI-DATACENTRE cluster. `sizing` and `serialize` are stated once
         # for the whole cluster; count, addressing, racks and naming are
         # per-datacentre below.
@@ -131,20 +146,54 @@ products:
           # dc_east -- the original datacentre
           # -----------------------------------------------------------------
           dc_east:
-            count: 1
+            count: 3
 
             # Explicit, and NOT the cluster name: this node is cass1, not
             # core1. Renaming means reissuing the certificate, so it is pinned
             # rather than derived.
             name_prefix: 'cass'
 
-            # Single-node cluster: the one node is the seed. seed_count is not
-            # used here because seed_count >= count is an error; instead the
-            # role is stated directly.
-            role: 'cassandra_seed'
+            # TWO seeds out of three. Was `role: 'cassandra_seed'` stated
+            # directly, which was correct at count: 1 and is actively wrong
+            # above it -- locals.tf:178 takes an explicit role verbatim for
+            # EVERY node in the cluster, so three nodes would have come up as
+            # three seeds. A ring where every node is a seed has no node that
+            # bootstraps normally, and seeds do not stream data on join.
+            #
+            # seed_count lets the index decide: nodes 1..seed_count are
+            # cassandra_seed, the rest cassandra_node. Two rather than one so
+            # losing a seed does not leave the cluster without a contact point;
+            # three would make seed_count == count, which the expander rejects.
+            seed_count: 2
 
             ip_offset: 11
-            racks: ['rack1']
+
+            # One rack per availability zone, and the ORDER is load-bearing:
+            # locals.tf:185 picks rack N for node N and locals.tf:192 picks
+            # subnet N for the same node, so rack1/rack2/rack3 line up with
+            # availability_zones[0..2] in tfvars. Shuffle one list and replicas
+            # quietly share an AZ while nodetool status still shows three racks.
+            racks: ['rack1', 'rack2', 'rack3']
+
+            # WHICH ZONES THIS CLUSTER USES, in rack order.
+            #
+            # Optional. Without it the nodes index the stack's whole subnet
+            # list, so placement depends on the order of availability_zones in
+            # tfvars -- a stack-level value that other products share. Naming
+            # them here makes "core spans 1a/1b/1c" a property of the cluster.
+            #
+            # Assignment is ROUND-ROBIN, because locals.tf indexes with
+            # `element`, which wraps: at count 6 the nodes land
+            # 1a,1b,1c,1a,1b,1c and rack1,rack2,rack3,rack1,rack2,rack3 --
+            # entry N of this list pairs with entry N of racks above, so the
+            # two lists must stay in the same order.
+            #
+            # Every zone named here needs a subnet: create_vpc builds one per
+            # entry of var.availability_zones, and a zone missing from that
+            # list fails at plan rather than at launch. Requires create_vpc --
+            # with caller-supplied subnet_ids the module cannot tell which zone
+            # a subnet is in.
+            availability_zones: ['us-east-1a', 'us-east-1b', 'us-east-1c']
 
           # -----------------------------------------------------------------
           # dc_west -- REMOVED, and left here as the record of how
