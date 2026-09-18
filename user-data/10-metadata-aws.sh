@@ -153,9 +153,20 @@ load_instance_metadata() {
     region="$(curl -sf -H "X-aws-ec2-metadata-token: ${token}" --max-time 5 \
       "${imds}/meta-data/placement/region" 2>/dev/null)"
     if ensure_aws_cli; then
+      # tr -d, and not cosmetic. A secret written from a Windows shell can
+      # carry a trailing carriage return; it survives Secrets Manager, reaches
+      # csr_attributes.yaml, and then the master's validator hashes something
+      # different from what was hashed when the digest was recorded. The CSR is
+      # denied for "challengePassword does not match" and the two values are
+      # indistinguishable in every log that prints them.
+      #
+      # Stripped HERE rather than trusting whoever created the secret, because
+      # this is the last point at which the value is still a shell string. A
+      # join secret is base64 or hex by construction, so no legitimate one
+      # contains whitespace and nothing is lost by removing it.
       export JOIN_SECRET="$(aws secretsmanager get-secret-value \
         --region "${region}" --secret-id "${secret_id}" \
-        --query SecretString --output text 2>/dev/null)"
+        --query SecretString --output text 2>/dev/null | tr -d '\r\n[:space:]')"
       [[ -n "${JOIN_SECRET:-}" ]] ||
         warn "could not read secret ${secret_id} -- check the instance profile's secretsmanager:GetSecretValue permission"
     else

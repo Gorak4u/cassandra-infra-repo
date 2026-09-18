@@ -102,7 +102,13 @@ if aws_ secretsmanager describe-secret --secret-id "${JOIN_SECRET_NAME}" --regio
     --secret-id "${JOIN_SECRET_NAME}" --region "${REGION}" \
     --query SecretString --output text)"
 else
-  JOIN_SECRET_VALUE="$(openssl rand -base64 32 | tr -d '\n')"
+  # tr -d '\r\n', not '\n'. On Git Bash for Windows openssl emits CRLF, so
+  # stripping only the newline leaves a CARRIAGE RETURN inside the secret --
+  # invisible everywhere, and fatal: the SHA recorded in Hiera is then taken
+  # over a value one byte longer than the one a node ends up presenting, and
+  # every CSR is denied with "challengePassword does not match" while the two
+  # strings look identical in any log.
+  JOIN_SECRET_VALUE="$(openssl rand -base64 32 | tr -d '\r\n')"
   aws_ secretsmanager create-secret \
     --name "${JOIN_SECRET_NAME}" \
     --secret-string "${JOIN_SECRET_VALUE}" \
