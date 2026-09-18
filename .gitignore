@@ -43,3 +43,21 @@ backend.hcl
 # bin/*.py leave these behind whenever the checks are run locally.
 __pycache__/
 *.py[cod]
+
+# ---------------------------------------------------------------------------
+# Key material -- NEVER commit
+# ---------------------------------------------------------------------------
+# An eyaml private key reached this PUBLIC repo because nothing here stopped a
+# `git add -A`, and the file's own header claiming "GITIGNORED" was not true of
+# this repo. The control repo deploy key's private half lives at the repo root
+# right beside its .pub, and bootstrap-account.sh writes the EC2 keypair .pem
+# under terraform/aws/ -- both are easy to sweep up by accident.
+#
+# Public halves stay tracked on purpose: they are not secret, and knowing which
+# key is registered where is worth having in the repo.
+keys/
+*.pem
+*.pkcs7.pem
+plaintext.yaml
+control-repo-key
+!*.pub
