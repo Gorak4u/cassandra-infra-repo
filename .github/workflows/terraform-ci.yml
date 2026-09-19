@@ -1,30 +1,40 @@
 name: Terraform CI
 
+# CI/CD DISABLED -- automatic triggers removed on request.
+# The jobs below are unchanged and still run via the Actions tab
+# (workflow_dispatch). To re-enable, delete the `on:` block
+# immediately below and uncomment the original one after it.
 on:
-  push:
-    branches: ['**']
-    paths:
-      - 'terraform/**'
-      - 'inventory/**'
-      - 'user-data/**'
-      - 'bin/**'
-      - 'provision.sh'
-      # The workflow itself: without this, a change to CI does not run CI, so
-      # a broken or newly added job is only discovered by the next unrelated
-      # commit that happens to touch one of the paths above.
-      - '.github/workflows/terraform-ci.yml'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'terraform/**'
-      - 'inventory/**'
-      - 'user-data/**'
-      - 'bin/**'
-      - 'provision.sh'
-      # The workflow itself: without this, a change to CI does not run CI, so
-      # a broken or newly added job is only discovered by the next unrelated
-      # commit that happens to touch one of the paths above.
-      - '.github/workflows/terraform-ci.yml'
+  workflow_dispatch:
+
+# --- ORIGINAL TRIGGERS, commented out ---------------------------------
+# on:
+#   push:
+#     branches: ['**']
+#     paths:
+#       - 'terraform/**'
+#       - 'inventory/**'
+#       - 'user-data/**'
+#       - 'bin/**'
+#       - 'provision.sh'
+#       # The workflow itself: without this, a change to CI does not run CI, so
+#       # a broken or newly added job is only discovered by the next unrelated
+#       # commit that happens to touch one of the paths above.
+#       - '.github/workflows/terraform-ci.yml'
+#   pull_request:
+#     branches: [main]
+#     paths:
+#       - 'terraform/**'
+#       - 'inventory/**'
+#       - 'user-data/**'
+#       - 'bin/**'
+#       - 'provision.sh'
+#       # The workflow itself: without this, a change to CI does not run CI, so
+#       # a broken or newly added job is only discovered by the next unrelated
+#       # commit that happens to touch one of the paths above.
+#       - '.github/workflows/terraform-ci.yml'
+
+# ----------------------------------------------------------------------
 
 jobs:
   # ---------------------------------------------------------------------------
