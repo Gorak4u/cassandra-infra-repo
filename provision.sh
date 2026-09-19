@@ -100,10 +100,39 @@ readonly SUBNET='172.30.30.0/24'
 # data/customers/amex/nonprod/products/puppetmaster/clusters/pm.yaml, so the
 # plaintext never reaches the CA.
 #
+# This used to be a literal string here -- which meant the "lab secret" was
+# committed, in plaintext, to a PUBLIC repo, and stayed there until someone
+# printed it in a transcript. There is exactly one place a lab secret can live
+# safely in this repo: keys/eyaml/plaintext.yaml, which is gitignored and is
+# already the source of truth bin/ensure-eyaml.sh encrypts from. So that is
+# where this reads from now, in order:
+#   1. PUPPET_JOIN_SECRET, if the caller set it.
+#   2. autosign_join_secret from keys/eyaml/plaintext.yaml, if it exists.
+#   3. A freshly generated random value, with a loud warning -- this will NOT
+#      match whatever digest is already in Hiera, so run bin/ensure-eyaml.sh
+#      (or `provision.sh up`, which calls it) before relying on this path.
 # In a real estate this comes from the provisioning system's secret store and
-# is per-batch or per-node. Hardcoded here because a lab that needs a vault to
-# start is a lab nobody starts.
-readonly JOIN_SECRET="${PUPPET_JOIN_SECRET:-amex-nonprod-join-2026}"
+# is per-batch or per-node.
+_resolve_join_secret() {
+  if [[ -n "${PUPPET_JOIN_SECRET:-}" ]]; then
+    printf '%s' "${PUPPET_JOIN_SECRET}"
+    return
+  fi
+  local plain="${HERE}/keys/eyaml/plaintext.yaml"
+  if [[ -f "${plain}" ]]; then
+    local v
+    v="$(sed -n "s/^profile_puppetmaster_pfpt::autosign_join_secret: *'\\(.*\\)'.*/\\1/p" "${plain}" | head -1)"
+    if [[ -n "${v}" ]]; then
+      printf '%s' "${v}"
+      return
+    fi
+  fi
+  echo "WARNING: no PUPPET_JOIN_SECRET and no ${plain} yet -- generating an" \
+       "ephemeral join secret that will not match any digest already in" \
+       "Hiera. Run ./bin/ensure-eyaml.sh first, or let 'provision.sh up' do it." >&2
+  openssl rand -hex 16
+}
+readonly JOIN_SECRET="$(_resolve_join_secret)"
 
 # Per-node memory now comes from the inventory's `sizing:` shape (the `mem`
 # column of the expansion), not from a constant here -- so a cluster's machine
@@ -409,7 +438,6 @@ code_deploy() {
   local target="${CONTROL_REPO}/modules"
   local fixtures="${CONTROL_REPO}/site-modules/cassandra_pfpt/spec/fixtures/modules"
   local stubs="${CONTROL_REPO}/site-modules/cassandra_pfpt/spec/fixtures/stubs"
-  local standins="${REPO}/local-cluster/modules"
 
   install -d "${target}" || die "could not create ${target}"
 
@@ -436,8 +464,20 @@ code_deploy() {
   # puppetlabs-hocon provides hocon_setting, which puppetmaster_pfpt::jvm needs
   # to edit the nested jruby-puppet block in puppetserver.conf. See the note in
   # that class for why file_line cannot do it.
+  #
+  # puppetlabs-java is here for the same reason hocon is: it is a REAL,
+  # pinned Puppetfile dependency (see Puppetfile's `mod 'puppetlabs-java'`),
+  # not a lab fake. manifests/site.pp does `include java` unconditionally, and
+  # cassandra_pfpt::service additionally subscribes to Class['::java']
+  # whenever manage_java is false -- the profile default, meaning Java is
+  # managed EXTERNALLY to cassandra_pfpt. Either way the class has to exist
+  # and actually install a JVM; a stub that only compiles would leave
+  # Cassandra with nothing to run on. This used to require an undocumented
+  # third sibling directory (local-cluster/modules/java) that nothing in this
+  # repo could satisfy on its own; fetching it from the Forge like every
+  # other third-party dependency removes that requirement entirely.
   local forge_mod forge_ver
-  for spec in 'hocon:puppetlabs-hocon:2.0.0'; do
+  for spec in 'hocon:puppetlabs-hocon:2.0.0' 'java:puppetlabs-java:11.1.0'; do
     forge_mod="${spec%%:*}"
     forge_ver="${spec##*:}"
     local slug="${spec#*:}"; slug="${slug%%:*}"
@@ -467,25 +507,13 @@ code_deploy() {
     ok "deployed ${forge_mod} ${forge_ver} (Forge)"
   done
 
-  # Environment dependencies the modules REFERENCE but do not own.
-  #
-  # cassandra_pfpt::service does `subscribe => Class['::java']` whenever
-  # manage_java is false (the production default), and both role classes do
-  # `include profile_firewall`. A reference to an undeclared class is a compile
-  # error, so without these every catalogue in the estate fails.
-  #
-  # The local-cluster stand-ins are used rather than the spec stubs: the
-  # stand-in `java` installs a real OpenJDK, which the spec stub does not, and
-  # the Cassandra package genuinely needs a JVM.
-  for m in java profile_firewall; do
-    if [[ -d "${target}/${m}" ]]; then
-      info "${m} already deployed"
-      continue
-    fi
-    [[ -d "${standins}/${m}" ]] || die "environment stand-in ${m} missing at ${standins}/${m}"
-    cp -R "${standins}/${m}" "${target}/${m}" || die "could not deploy ${m}"
-    ok "deployed ${m} (environment stand-in)"
-  done
+  # profile_firewall is NOT deployed here. Both role classes `include
+  # profile_firewall`, but it is first-party code that already lives at
+  # site-modules/profile_firewall -- and environment.conf's modulepath is
+  # `site-modules:modules:$basemodulepath`, with site-modules searched FIRST.
+  # It is therefore already on the modulepath with no copy step needed. (This
+  # used to be copied into modules/ from an undocumented sibling directory;
+  # that step was redundant with modulepath precedence and has been removed.)
 
   # ssl_certificate is referenced only on the TLS path, which this lab does not
   # enable, but a missing class is a compile error whether the branch is taken

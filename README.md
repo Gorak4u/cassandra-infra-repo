@@ -27,29 +27,33 @@ them a JVM (pm1 for PuppetServer, jenkins1 and cass1 for their products).
 
 ### What has to be on disk first
 
-`provision.sh` expects **three sibling directories**, and fails without them:
+`provision.sh` expects **two sibling directories**:
 
 ```
 <parent>/
   cassandra-infra-repo/      this repo
   cassandra-control-repo/    mounted read-only into the master at /opt/control-repo
-  local-cluster/modules/     environment stand-ins  <- easy to miss
 ```
 
-`local-cluster/modules/` supplies classes the Puppet modules **reference but do
-not own**: `cassandra_pfpt::service` does `subscribe => Class['::java']` when
-`manage_java` is false, and both role classes `include profile_firewall`. A
-reference to an undeclared class is a compile error, so without them every
-catalogue in the estate fails. Missing it aborts before anything is created:
-
-```
-FATAL environment stand-in profile_firewall missing at <parent>/local-cluster/modules/profile_firewall
-```
-
-Override the control repo location with `PUPPET_CONTROL_REPO`. There is no
-equivalent override for `local-cluster/`.
+Override the control repo location with `PUPPET_CONTROL_REPO`.
 
 Docker must be running, and the image is pulled from Docker Hub on first use.
+
+Two classes the Puppet modules **reference but do not own** used to require a
+third, undocumented sibling directory (`local-cluster/modules/`) that nothing
+in either repo could supply on its own: `manifests/site.pp` does
+`include java` unconditionally (and `cassandra_pfpt::service` additionally
+subscribes to it whenever `manage_java` is false, the profile default), and
+both role classes `include profile_firewall`. That requirement is gone:
+
+- `profile_firewall` is first-party code at `site-modules/profile_firewall`
+  in the control repo, and `environment.conf`'s modulepath is
+  `site-modules:modules:$basemodulepath` -- site-modules is searched first,
+  so it was already resolvable with no copy step. The copy into `modules/`
+  was pure redundancy.
+- `java` is fetched from the Forge, the same way `hocon` already was --
+  `puppetlabs-java`, pinned to the version `Puppetfile` names. `provision.sh`
+  does this automatically as part of `code_deploy()`; nothing to place by hand.
 
 ## What actually happens
 
