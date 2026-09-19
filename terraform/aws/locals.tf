@@ -115,9 +115,9 @@ locals {
           racks       = try(dcspec.racks, cspec.racks, ["rack1"])
           # Optional per-cluster AZ list; [] means "use the stack's
           # var.availability_zones in list order". See the note on subnet_id.
-          azs = try(dcspec.availability_zones, cspec.availability_zones, [])
-          sizing      = try(dcspec.sizing, cspec.sizing)
-          os          = try(dcspec.os, cspec.os, local.default_os)
+          azs    = try(dcspec.availability_zones, cspec.availability_zones, [])
+          sizing = try(dcspec.sizing, cspec.sizing)
+          os     = try(dcspec.os, cspec.os, local.default_os)
           # "" rather than null for "not set": an all-null column has no type.
           role      = try(dcspec.role, cspec.role, "")
           serialize = try(dcspec.serialize, cspec.serialize, local.serialize_default)

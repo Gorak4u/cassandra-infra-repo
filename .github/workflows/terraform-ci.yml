@@ -9,6 +9,10 @@ on:
       - 'user-data/**'
       - 'bin/**'
       - 'provision.sh'
+      # The workflow itself: without this, a change to CI does not run CI, so
+      # a broken or newly added job is only discovered by the next unrelated
+      # commit that happens to touch one of the paths above.
+      - '.github/workflows/terraform-ci.yml'
   pull_request:
     branches: [main]
     paths:
@@ -17,6 +21,10 @@ on:
       - 'user-data/**'
       - 'bin/**'
       - 'provision.sh'
+      # The workflow itself: without this, a change to CI does not run CI, so
+      # a broken or newly added job is only discovered by the next unrelated
+      # commit that happens to touch one of the paths above.
+      - '.github/workflows/terraform-ci.yml'
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -95,13 +103,12 @@ jobs:
         run: terraform fmt -check -recursive
 
   # ---------------------------------------------------------------------------
-  # GCP plan -- only on pull requests, uses dummy tfvars
+  # GCP plan -- dummy tfvars, no credentials, no state
   # ---------------------------------------------------------------------------
   plan-gcp:
     name: Plan GCP (dry-run)
     runs-on: ubuntu-latest
     needs: [validate-gcp, check-inventory]
-    if: github.event_name == 'pull_request'
     defaults:
       run:
         working-directory: terraform/gcp
@@ -130,13 +137,12 @@ jobs:
         run: terraform plan -input=false 2>&1 | tail -20
 
   # ---------------------------------------------------------------------------
-  # AWS plan -- only on pull requests, uses dummy tfvars
+  # AWS plan -- BRING-YOUR-OWN-NETWORK shape (create_vpc = false)
   # ---------------------------------------------------------------------------
   plan-aws:
     name: Plan AWS (dry-run)
     runs-on: ubuntu-latest
     needs: [validate-aws, check-inventory]
-    if: github.event_name == 'pull_request'
     defaults:
       run:
         working-directory: terraform/aws
@@ -163,3 +169,58 @@ jobs:
           EOF
       - name: terraform plan (validates resource graph)
         run: terraform plan -input=false 2>&1 | tail -20
+
+  # ---------------------------------------------------------------------------
+  # AWS plan -- MANAGED-NETWORK shape (create_vpc = true)
+  # ---------------------------------------------------------------------------
+  # A SECOND shape, not a duplicate. plan-aws above runs with create_vpc =
+  # false, which is the variable's default and skips vpc.tf, the NAT gateway,
+  # the route tables, dns.tf and the per-AZ subnet lookup entirely -- count = 0
+  # on all of it. Every estate built from this repo so far has used
+  # create_vpc = true, so the half of the module that actually runs in anger
+  # was the half CI never planned.
+  #
+  # What only this shape reaches:
+  #   - aws_route53_zone.private and the per-node A record in dns.tf
+  #   - local.subnet_by_az, and the "AZ-NOT-IN-THIS-VPC" sentinel precondition
+  #     for a cluster naming an availability zone the VPC has no subnet in
+  #   - aws_instance.node's depends_on the route table association
+  #   - the IAM role, instance profile and the deploy-key policy, which
+  #     create_iam_role = true builds and the other shape supplies externally
+  #
+  # The deploy-key ARN is a syntactically valid dummy on purpose: it satisfies
+  # the precondition added in 8ad58a3, so that check is exercised in its
+  # PASSING direction rather than only asserted to exist.
+  plan-aws-vpc:
+    name: Plan AWS (managed network)
+    runs-on: ubuntu-latest
+    needs: [validate-aws, check-inventory]
+    defaults:
+      run:
+        working-directory: terraform/aws
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.5"
+      - name: terraform init (no backend)
+        run: terraform init -backend=false
+      - name: create CI tfvars
+        run: |
+          cat > ci.auto.tfvars <<'EOF'
+          region             = "us-east-1"
+          customer           = "amex"
+          environment        = "nonprod"
+          datacenter         = "dc_east"
+          ami_id             = "ami-00000000000000000"
+
+          create_vpc         = true
+          create_dns_zone    = true
+          create_iam_role    = true
+          availability_zones = ["us-east-1a", "us-east-1b", "us-east-1c"]
+
+          control_repo_deploy_key_secret_arn = "arn:aws:secretsmanager:us-east-1:000000000000:secret:ci-deploy-key-000000"
+          join_secret_arn                    = "arn:aws:secretsmanager:us-east-1:000000000000:secret:ci-join-secret-000000"
+          EOF
+      - name: terraform plan (validates resource graph + preconditions)
+        run: terraform plan -input=false 2>&1 | tail -30
