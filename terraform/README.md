@@ -16,8 +16,8 @@ three containers or three instances depending on which driver runs.
 | `terraform.tfvars.example` | ✅ | ✅ |
 | `terraform fmt` / `validate` | ✅ | ✅ |
 | Inventory expansion evaluated against real YAML | ✅ | ✅ |
-| `plan`, bring-your-own-network (`create_vpc = false`) | ✅ 9 instances | ❌ never run |
-| `plan`, managed network (`create_vpc = true`) | ✅ 36 resources | n/a |
+| `plan`, bring-your-own network | ✅ 9 instances | ⚠️ needs credentials — see below |
+| `plan`, managed network | ✅ 36 resources | ✅ 17 resources |
 | `apply` against a live account | ✅ once, then destroyed | ❌ never run |
 
 **AWS has been applied once.** A five-node estate (one master, three Cassandra,
@@ -27,16 +27,56 @@ hand, and two Cassandra nodes never finished joining the ring. So the stack
 provably creates the infrastructure, and the end-to-end path is **not** yet
 proven repeatable.
 
-**GCP has never been planned or applied.** Treat its first `apply` as its first
-test.
+**GCP now plans, for the first time.** The managed-network shape
+(`create_network = true`, with NAT, firewall rules and a service account)
+plans to 17 resources: a network, a subnetwork, a router and NAT, three
+firewall rules, a service account, and three instances each with a data disk
+and its attachment. The inventory expands correctly — cass1/cass2/cass3 at
+`e2-small` from `sizing: small` — which is the part `validate` never checks.
+**GCP has still never been applied.** Treat its first `apply` as its first
+real test.
 
-Both AWS plan shapes run in CI on every push (`.github/workflows/terraform-ci.yml`).
+### Why GCP's bring-your-own-network shape cannot be plan-verified offline
+
+A difference between the two stacks worth knowing before you rely on CI for
+either. AWS's bring-your-own path takes ids from tfvars, and its only `data`
+sources are `aws_iam_policy_document`, which Terraform evaluates locally — so
+both AWS shapes plan with dummy credentials and no account. GCP's equivalent
+path *looks up* the existing network:
+
+```hcl
+data "google_compute_network"    "existing" { count = var.create_network ? 0 : 1 }
+data "google_compute_subnetwork" "existing" { count = var.create_network ? 0 : 1 }
+```
+
+Those are real API reads, so that shape fails at plan time without working
+credentials:
+
+```
+Error: Error when reading or editing Network Not Found : shared-nonprod-vpc
+```
+
+That is not a defect — reading the real VPC is the point, and it catches a
+wrong network name before an apply rather than after. But it does mean the
+GCP BYO shape cannot be gated in a credential-free CI job the way both AWS
+shapes can. Verify it against a real project, or with a service account
+limited to `compute.networks.get` and `compute.subnetworks.get`.
+
+Both AWS plan shapes have CI jobs in `.github/workflows/terraform-ci.yml`.
 They need no credentials and no state — `init -backend=false` against dummy
 tfvars — and they exercise the preconditions on `aws_instance.node` in both
 their firing and passing directions. Note the two shapes need **different
 inventory slices**: `amex/nonprod` names per-cluster `availability_zones`,
 which cannot be honoured when the module does not own the VPC, so the
 bring-your-own-network job plans `amex/prod` instead.
+
+**Those jobs no longer fire on their own.** Every workflow in this repo was
+switched to `workflow_dispatch` only; the original `push`/`pull_request`
+triggers are commented out directly beneath, so re-enabling is uncommenting
+them. Until then these plans are something a person runs — by hand, or from
+the Actions tab — not a gate. GCP's managed-network plan is credential-free
+too and could be gated the same way; its bring-your-own shape cannot (see
+below).
 
 ## `terraform validate` is not evidence that this works
 
@@ -203,12 +243,34 @@ survives exactly until the first reboot on a new instance family.
 2. **Egress.** Instances have no public address. With no NAT and no internal
    mirror, first boot **hangs** installing the Puppet agent — and it looks
    exactly like a user-data bug. Check egress before reading the script.
-3. **The join order does not scale.** `wait_for` is a linear chain: each node
-   waits for the previous node's CQL port, because Cassandra refuses concurrent
-   bootstrap. Correct for a handful of nodes; at 100 it is a multi-hour serial
-   build and one dead node wedges the rest forever. Replace it with a lock
-   carrying a TTL (a DynamoDB conditional write, or a GCS object precondition):
-   acquire, bootstrap, release, and let the TTL break a stuck hold.
+3. **The join order does not scale, and its timeout is the sharp edge.**
+   `wait_for` is a linear chain: each node waits for the previous node's CQL
+   port, because Cassandra refuses concurrent bootstrap. Correct for a handful
+   of nodes; at 100 it is a multi-hour serial build.
+
+   A dead node does **not** wedge the rest — on timeout a node logs a warning
+   and joins anyway, deliberately, so one broken machine produces one clear
+   failure instead of an estate of nodes all waiting on the one in front. The
+   cost of that choice is that **the timeout has to exceed a real bootstrap**,
+   or the chain silently stops serialising: every node behind a slow
+   bootstrap times out and starts its own, concurrently, which is the exact
+   thing the chain exists to prevent. It was hardcoded at 900s — fine for an
+   empty lab node, badly wrong for a production one streaming hundreds of GB.
+
+   It is now `bootstrap_wait_timeout`, set in `inventory/defaults.yaml`,
+   overridable per customer+environment and per stack (`-var`), and carried to
+   the node as an instance tag (AWS) or metadata attribute (GCP). Raise it
+   above the worst-case bootstrap for the largest node you run. The default
+   stays 900 because that is right for the lab this repo builds by default.
+
+   None of that makes the chain parallel. For that, replace it with a lock
+   carrying a TTL (a DynamoDB conditional write, or a GCS object
+   precondition): acquire, bootstrap, release, and let the TTL break a stuck
+   hold. Deliberately **not** implemented here — an untested distributed lock
+   in the boot path of a stateful database is worse than a slow serial build:
+   fail closed and every node wedges, fail open and you get the concurrent
+   bootstrap this whole mechanism exists to avoid. Build it against a real
+   account, with a test that proves both failure directions.
 4. **No autoscaling.** Deliberately. Cassandra is stateful: a scale-in that
    terminates a node holding replicas is a data-loss event. One instance per
    node, replaced deliberately.

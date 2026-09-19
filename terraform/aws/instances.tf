@@ -167,6 +167,11 @@ resource "aws_instance" "node" {
       puppet_port  = local.ports.puppet
       cql_port     = local.ports.cassandra_cql
       jenkins_port = local.ports.jenkins_http
+
+      # How long this node waits for the one in front of it in the join chain.
+      # Read by user-data/30-role-cassandra-node.sh; see the note in
+      # inventory/defaults.yaml for why the value is not cosmetic.
+      bootstrap_wait_timeout = local.bootstrap_wait_timeout
     },
     var.extra_tags_per_node,
   )

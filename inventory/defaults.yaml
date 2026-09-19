@@ -139,6 +139,31 @@ ports:
   jenkins_http: 8080
 
 # ===========================================================================
+# RING JOIN SERIALISATION
+# ===========================================================================
+# Cassandra refuses concurrent bootstrap, so each node waits for the previous
+# one's CQL port before joining (the `wait_for` chain -- see serialize_by_default
+# below). This is how long it waits.
+#
+# THE NUMBER MATTERS MORE THAN IT LOOKS. On timeout the node joins ANYWAY,
+# deliberately: a stuck chain means the cluster never forms and the only
+# diagnostic is every node waiting on the one in front. But that trade is only
+# safe while the timeout comfortably exceeds a real bootstrap. It was hardcoded
+# at 900s, which is fine for an empty lab node and badly wrong for a production
+# one: streaming a few hundred GB takes hours, so every node behind it would
+# time out and start its own bootstrap concurrently -- precisely the thing the
+# chain exists to prevent, arrived at silently.
+#
+# Set this above the worst-case bootstrap for the largest node in the estate.
+# Rule of thumb: (data per node / streaming throughput) x 3. For a 500 GB node
+# on a 1 Gbit link that is about 4 hours, so 14400.
+#
+# 900 is kept as the default because it suits the lab this repo builds by
+# default. Any cluster holding real data should raise it in its own
+# environment file.
+bootstrap_wait_timeout: 900
+
+# ===========================================================================
 # MACHINE SHAPES
 # ===========================================================================
 # Named sizes, resolved per platform. A cluster asks for `sizing: small`, not

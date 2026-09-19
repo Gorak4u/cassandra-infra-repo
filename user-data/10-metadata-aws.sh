@@ -69,6 +69,10 @@ load_instance_metadata() {
   export CQL_PORT="$(_md cql_port)"
   export JENKINS_PORT="$(_md jenkins_port)"
 
+  # How long this node waits for the previous one's CQL port before joining
+  # the ring anyway. Same source and same fallback rule as the ports.
+  export BOOTSTRAP_WAIT_TIMEOUT="$(_md bootstrap_wait_timeout)"
+
   # --- The certname ------------------------------------------------------
   # DERIVED from the instance id by default, and only taken from a tag when
   # explicitly set.

@@ -530,3 +530,23 @@ variable "jenkins_client_source_tags" {
   type        = list(string)
   default     = []
 }
+
+variable "bootstrap_wait_timeout" {
+  description = <<-EOT
+    Seconds a Cassandra node waits for the previous node in the join chain to
+    serve CQL before joining anyway. null (the default) takes the value from
+    the inventory: the customer's environment file if it sets one, otherwise
+    inventory/defaults.yaml.
+
+    Raise it above the worst-case bootstrap time for the largest node in this
+    stack. Too low is not a delay -- it is every node behind a slow bootstrap
+    starting its own concurrently, which is the failure the chain prevents.
+  EOT
+  type        = number
+  default     = null
+
+  validation {
+    condition     = var.bootstrap_wait_timeout == null || try(var.bootstrap_wait_timeout > 0, false)
+    error_message = "bootstrap_wait_timeout must be a positive number of seconds, or null to take the inventory's value."
+  }
+}

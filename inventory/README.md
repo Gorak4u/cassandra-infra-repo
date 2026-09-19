@@ -106,11 +106,25 @@ reasoning, is in `defaults.yaml` next to the key.
 
 ./bin/check-sizing.py --verbose               # machine RAM vs the Hiera heap
 ./bin/check-ports.py --verbose                # firewall ports vs the Hiera ports
+./bin/check-ssh-tenancy.py --verbose          # Jenkins' SSH reach vs tenancy
 ```
 
-Both checks exist for the same reason: a value that spans infra and the control
-repo, that nothing connects at runtime, and whose mismatch is silent. **Run
-both in CI.**
+All three exist for the same reason: an invariant that spans infra and the
+control repo, that nothing connects at runtime, and whose violation is silent.
+**Run them wherever both repos are present** — which is not this repo's CI, for
+the reason `terraform/README.md` gives about `check-sizing.py`.
+
+`check-ssh-tenancy.py` is the odd one out and worth a sentence. Every other
+boundary in this estate is enforced by the Puppet CA: Hiera keys on
+`trusted.extensions.pp_*`, which come from a signed certificate, so a node
+cannot read a tenancy it was never issued a certificate for. Jenkins' SSH
+access to the Cassandra fleet is the one exception. The CA still decides which
+node *receives* the cassy private key — that lives in a tenancy-scoped
+`.eyaml` — but once Jenkins holds it, the Cassandra node's sshd authenticates
+the **key**, not the certificate. So what keeps one customer's Jenkins out of
+another's nodes is only that they were given different keys, and one
+copy-pasted `authorized_keys` line would quietly undo it with nothing failing
+anywhere. That check is what notices.
 
 `provision.sh` calls the expander itself; you rarely run it by hand. It emits
 the same flat table the hand-written file used, so the part of `provision.sh`

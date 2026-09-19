@@ -41,8 +41,8 @@ wait_for_port "${PUPPET_SERVER}" "${PUPPET_PORT}" 900 "puppet master ${PUPPET_SE
 # diagnostic is three nodes waiting. Proceeding produces one clear failure on
 # the node that is actually broken.
 if [[ -n "${WAIT_FOR:-}" && "${WAIT_FOR}" != '-' ]]; then
-  wait_for_port "${WAIT_FOR}" "${CQL_PORT}" 900 "Cassandra on ${WAIT_FOR}:${CQL_PORT}" ||
-    warn "${WAIT_FOR} is not serving CQL; joining anyway, which may race its bootstrap"
+  wait_for_port "${WAIT_FOR}" "${CQL_PORT}" "${BOOTSTRAP_WAIT_TIMEOUT}" "Cassandra on ${WAIT_FOR}:${CQL_PORT}" ||
+    warn "${WAIT_FOR} did not serve CQL within ${BOOTSTRAP_WAIT_TIMEOUT}s; joining anyway, which may race its bootstrap -- if that node is merely slow rather than broken, raise bootstrap_wait_timeout in the inventory"
   # Cassandra reports 9042 open slightly before it has finished announcing
   # itself in gossip. A short settle avoids the next node starting its own
   # bootstrap inside that window.

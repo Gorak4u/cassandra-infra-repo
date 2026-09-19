@@ -91,6 +91,11 @@ resource "google_compute_instance" "node" {
       cql_port     = local.ports.cassandra_cql
       jenkins_port = local.ports.jenkins_http
 
+      # How long this node waits for the one in front of it in the join chain.
+      # Read by user-data/30-role-cassandra-node.sh; see the note in
+      # inventory/defaults.yaml for why the value is not cosmetic.
+      bootstrap_wait_timeout = local.bootstrap_wait_timeout
+
       # PER NODE, not per stack: resolved from the inventory's puppet_server
       # layers, falling back to var.puppet_server. So one customer's cassandra
       # fleet can be served by a different master from the rest of its estate

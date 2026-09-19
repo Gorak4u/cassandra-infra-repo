@@ -60,6 +60,7 @@ readonly CONTROL_REPO="${PUPPET_CONTROL_REPO:-${REPO}/cassandra-control-repo}"
 readonly INVENTORY_DIR="${HERE}/inventory"
 readonly EXPANDER="${HERE}/bin/expand-inventory.py"
 readonly SIZING_CHECK="${HERE}/bin/check-sizing.py"
+readonly SSH_TENANCY_CHECK="${HERE}/bin/check-ssh-tenancy.py"
 readonly ENSURE_EYAML="${HERE}/bin/ensure-eyaml.sh"
 readonly USERDATA_DIR="${HERE}/user-data"
 readonly STATE="${HERE}/.state"
@@ -256,6 +257,11 @@ PORT_PUPPET="$(inv_default ports.puppet '8140')"
 PORT_CQL="$(inv_default ports.cassandra_cql '9042')"
 PORT_JENKINS="$(inv_default ports.jenkins_http '8080')"
 
+# How long a Cassandra node waits for the previous node in the join chain to
+# serve CQL before joining anyway. See inventory/defaults.yaml: the value is
+# not cosmetic, because on timeout the node proceeds regardless.
+BOOTSTRAP_WAIT_TIMEOUT="$(inv_default bootstrap_wait_timeout '900')"
+
 # Control repo URL. Read from defaults.yaml first; overridden per
 # customer+environment in read_inventory() below, same pattern as ports.
 # Empty on the local driver: the repo is bind-mounted, not cloned.
@@ -308,6 +314,7 @@ read_inventory() {
     PORT_CQL="$(inv_env "${slice_customer}" "${slice_env}" ports.cassandra_cql "${PORT_CQL}")"
     PORT_JENKINS="$(inv_env "${slice_customer}" "${slice_env}" ports.jenkins_http "${PORT_JENKINS}")"
     CONTROL_REPO_URL="$(inv_env "${slice_customer}" "${slice_env}" control_repo_url "${CONTROL_REPO_URL}")"
+    BOOTSTRAP_WAIT_TIMEOUT="$(inv_env "${slice_customer}" "${slice_env}" bootstrap_wait_timeout "${BOOTSTRAP_WAIT_TIMEOUT}")"
   fi
 
   local filters=()
@@ -583,6 +590,7 @@ WAIT_FOR=${N_WAIT[$i]}
 PUPPET_PORT=${PORT_PUPPET}
 CQL_PORT=${PORT_CQL}
 JENKINS_PORT=${PORT_JENKINS}
+BOOTSTRAP_WAIT_TIMEOUT=${BOOTSTRAP_WAIT_TIMEOUT}
 
 # --- Control repo (puppetmaster bootstrap, cloud only) ---
 # Set from the inventory YAML. The local driver bind-mounts the repo and
@@ -674,6 +682,24 @@ cmd_up() {
     rm -f /tmp/sizing.$$
   else
     warn "${SIZING_CHECK} not executable; skipping the sizing cross-check"
+  fi
+
+  # Gate on the SSH tenancy check for the same reason, and one more: this is
+  # the one boundary in the estate the Puppet CA cannot enforce. A cassy key
+  # admitted by two tenancies lets whoever holds it reach both, and nothing at
+  # runtime would fail or even log. See bin/check-ssh-tenancy.py.
+  step "Checking Jenkins' SSH reach against tenancy"
+  if [[ -x "${SSH_TENANCY_CHECK}" ]]; then
+    if "${SSH_TENANCY_CHECK}" >/tmp/sshten.$$ 2>&1; then
+      ok "$(tail -1 /tmp/sshten.$$)"
+    else
+      sed 's/^/    /' /tmp/sshten.$$
+      rm -f /tmp/sshten.$$
+      die 'SSH tenancy check failed; fix the control repo grants before provisioning'
+    fi
+    rm -f /tmp/sshten.$$
+  else
+    warn "${SSH_TENANCY_CHECK} not executable; skipping the SSH tenancy check"
   fi
 
   # Ensure eyaml keys and encrypted secrets exist before the master boots.

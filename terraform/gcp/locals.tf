@@ -60,6 +60,19 @@ locals {
     var.ports,
   )
 
+  # --- Ring join serialisation ----------------------------------------------
+  # How long a node waits for the previous node's CQL port before joining the
+  # ring anyway. Same precedence as ports: tfvars > customer env file >
+  # defaults.yaml. See inventory/defaults.yaml for why the value matters --
+  # too low and every node behind a slow bootstrap starts its own, which is
+  # exactly what the wait_for chain exists to prevent.
+  bootstrap_wait_timeout = coalesce(
+    var.bootstrap_wait_timeout,
+    try(local.inv.bootstrap_wait_timeout, null),
+    try(local.defaults.bootstrap_wait_timeout, null),
+    900,
+  )
+
   # --- Control repo ---------------------------------------------------------
   # Precedence: tfvars > customer+environment yaml > defaults.yaml.
   # Follows the same layering as ports and domain, so one inventory YAML
