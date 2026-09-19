@@ -173,6 +173,17 @@ jobs:
   # ---------------------------------------------------------------------------
   # AWS plan -- BRING-YOUR-OWN-NETWORK shape (create_vpc = false)
   # ---------------------------------------------------------------------------
+  # Planned against amex/PROD, not nonprod. amex/nonprod's cassandra core
+  # cluster names per-cluster `availability_zones`, and this shape cannot
+  # honour them: local.subnet_by_az is {} when create_vpc = false, because
+  # caller-supplied subnet ids are opaque strings and the module has no data
+  # source to ask which zone each is in. Every such node gets the
+  # AZ-NOT-IN-THIS-VPC sentinel and the precondition on instances.tf:302 fires.
+  #
+  # That is the precondition working, not a bug to route around -- but it does
+  # mean the two shapes need different slices, and amex/prod sets no
+  # availability_zones anywhere. Verified: 9 instances, plan clean.
+  # ---------------------------------------------------------------------------
   plan-aws:
     name: Plan AWS (dry-run)
     runs-on: ubuntu-latest
@@ -192,7 +203,7 @@ jobs:
           cat > ci.auto.tfvars <<'EOF'
           region               = "us-east-1"
           customer             = "amex"
-          environment          = "nonprod"
+          environment          = "prod"
           datacenter           = "dc_east"
           ami_id               = "ami-00000000000000000"
           vpc_id               = "vpc-00000000"
@@ -248,10 +259,14 @@ jobs:
           datacenter         = "dc_east"
           ami_id             = "ami-00000000000000000"
 
-          create_vpc         = true
-          create_dns_zone    = true
-          create_iam_role    = true
-          availability_zones = ["us-east-1a", "us-east-1b", "us-east-1c"]
+          create_vpc            = true
+          create_dns_zone       = true
+          create_iam_role       = true
+          create_security_group = true
+          availability_zones    = ["us-east-1a", "us-east-1b", "us-east-1c"]
+
+          dns_domain    = "nonprod.amex.internal"
+          puppet_server = "pm1.nonprod.amex.internal"
 
           control_repo_deploy_key_secret_arn = "arn:aws:secretsmanager:us-east-1:000000000000:secret:ci-deploy-key-000000"
           join_secret_arn                    = "arn:aws:secretsmanager:us-east-1:000000000000:secret:ci-join-secret-000000"
