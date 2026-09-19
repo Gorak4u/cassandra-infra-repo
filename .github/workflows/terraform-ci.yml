@@ -60,6 +60,40 @@ jobs:
           bash -n provision.sh
           for f in user-data/*.sh; do bash -n "$f"; done
 
+      # Every one of these was committed 100644. provision.sh invokes
+      # bin/expand-inventory.py directly rather than through an interpreter, so
+      # on a fresh clone the lab harness died at
+      #
+      #   FATAL cannot execute .../bin/expand-inventory.py
+      #
+      # before creating anything -- i.e. the thing you would reach for to test a
+      # change locally was itself broken, and CI did not notice because its own
+      # step says `python3 bin/expand-inventory.py`, which does not need the bit.
+      - name: executables are executable
+        run: |
+          bad=0
+          for f in provision.sh bin/*.sh bin/*.py tools/*.rb; do
+            mode=$(git ls-files -s "$f" | cut -d' ' -f1)
+            [ "$mode" = "100755" ] || { echo "not executable in git: $f ($mode)"; bad=1; }
+          done
+          exit $bad
+
+      # bash -n on the FRAGMENTS is not the same check as bash -n on what a node
+      # actually runs. The fragments are concatenated per role, and a construct
+      # that is fine alone can be broken by what precedes it -- the top-level
+      # `local` fixed in 29cbcd8 was of exactly that shape. `render` assembles
+      # the real script with no Docker daemon and no cloud account, so there is
+      # no reason not to check it.
+      - name: assembled user-data parses, for every role
+        run: |
+          for n in pm1 cass1 jenkins1; do
+            out=$(PLATFORM=aws ./provision.sh render "$n" 2>/dev/null \
+                    | sed -n '/^#!\/bin\/bash/,$p')
+            [ -n "$out" ] || { echo "render produced nothing for $n"; exit 1; }
+            printf '%s' "$out" | bash -n || { echo "assembled user-data for $n does not parse"; exit 1; }
+            printf '  %-9s %6d B  OK\n' "$n" "$(printf '%s' "$out" | wc -c)"
+          done
+
   # ---------------------------------------------------------------------------
   # GCP Terraform -- validate + fmt
   # ---------------------------------------------------------------------------
