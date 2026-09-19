@@ -784,7 +784,7 @@ cmd_up() {
           -v "${eyaml_dir}/private_key.pkcs7.pem:/etc/puppetlabs/puppet/eyaml/private_key.pkcs7.pem:ro"
           -v "${eyaml_dir}/public_key.pkcs7.pem:/etc/puppetlabs/puppet/eyaml/public_key.pkcs7.pem:ro"
         )
-        log "eyaml private key mounted into ${name}"
+        info "eyaml private key mounted into ${name}"
       else
         warn "eyaml private key not found at ${eyaml_key}"
         warn "eyaml lookups will fail -- run cassandra-control-repo/bin/create-eyaml-keys.sh"
