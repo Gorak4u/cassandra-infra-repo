@@ -16,13 +16,27 @@ three containers or three instances depending on which driver runs.
 | `terraform.tfvars.example` | ✅ | ✅ |
 | `terraform fmt` / `validate` | ✅ | ✅ |
 | Inventory expansion evaluated against real YAML | ✅ | ✅ |
-| `plan` / `apply` against a live account | ❌ never run | ❌ never run |
+| `plan`, bring-your-own-network (`create_vpc = false`) | ✅ 9 instances | ❌ never run |
+| `plan`, managed network (`create_vpc = true`) | ✅ 36 resources | n/a |
+| `apply` against a live account | ✅ once, then destroyed | ❌ never run |
 
-**Neither has been applied.** They have been validated and their locals have
-been evaluated against the real inventory with `terraform console`, which is a
-meaningfully stronger check than `validate` — see the next section — but no
-instance has ever been created by either. Treat the first `apply` as the first
+**AWS has been applied once.** A five-node estate (one master, three Cassandra,
+one Jenkins) was created and later destroyed. It was not a clean run: the
+master needed hand-applied Hiera, the eyaml private key had to be placed by
+hand, and two Cassandra nodes never finished joining the ring. So the stack
+provably creates the infrastructure, and the end-to-end path is **not** yet
+proven repeatable.
+
+**GCP has never been planned or applied.** Treat its first `apply` as its first
 test.
+
+Both AWS plan shapes run in CI on every push (`.github/workflows/terraform-ci.yml`).
+They need no credentials and no state — `init -backend=false` against dummy
+tfvars — and they exercise the preconditions on `aws_instance.node` in both
+their firing and passing directions. Note the two shapes need **different
+inventory slices**: `amex/nonprod` names per-cluster `availability_zones`,
+which cannot be honoured when the module does not own the VPC, so the
+bring-your-own-network job plans `amex/prod` instead.
 
 ## `terraform validate` is not evidence that this works
 
@@ -198,6 +212,10 @@ survives exactly until the first reboot on a new instance family.
 4. **No autoscaling.** Deliberately. Cassandra is stateful: a scale-in that
    terminates a node holding replicas is a data-loss event. One instance per
    node, replaced deliberately.
-5. **`check-sizing.py` should run in CI.** A machine too small for the JVM heap
-   Hiera pins is OOM-killed after a clean-looking startup, with nothing failing
-   in Puppet. The `sizing` output exists to be cross-checked against it.
+5. **`check-sizing.py` cannot run in THIS repo's CI.** It compares an infra
+   value against the Hiera that sets it, so it needs cassandra-control-repo
+   checked out alongside; the built-in `GITHUB_TOKEN` is scoped to one
+   repository. Run it wherever both halves are present — it honours
+   `PUPPET_CONTROL_REPO` and defaults to `../cassandra-control-repo`. It
+   matters because a machine too small for the JVM heap Hiera pins is
+   OOM-killed after a clean-looking startup, with nothing failing in Puppet.

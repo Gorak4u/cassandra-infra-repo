@@ -25,6 +25,32 @@ That is: `teardown`, `up`, `wait`, `status`, `verify`. Expect 15–25 minutes on
 a cold image cache — three instances each download a Puppet agent, and two of
 them a JVM (pm1 for PuppetServer, jenkins1 and cass1 for their products).
 
+### What has to be on disk first
+
+`provision.sh` expects **three sibling directories**, and fails without them:
+
+```
+<parent>/
+  cassandra-infra-repo/      this repo
+  cassandra-control-repo/    mounted read-only into the master at /opt/control-repo
+  local-cluster/modules/     environment stand-ins  <- easy to miss
+```
+
+`local-cluster/modules/` supplies classes the Puppet modules **reference but do
+not own**: `cassandra_pfpt::service` does `subscribe => Class['::java']` when
+`manage_java` is false, and both role classes `include profile_firewall`. A
+reference to an undeclared class is a compile error, so without them every
+catalogue in the estate fails. Missing it aborts before anything is created:
+
+```
+FATAL environment stand-in profile_firewall missing at <parent>/local-cluster/modules/profile_firewall
+```
+
+Override the control repo location with `PUPPET_CONTROL_REPO`. There is no
+equivalent override for `local-cluster/`.
+
+Docker must be running, and the image is pulled from Docker Hub on first use.
+
 ## What actually happens
 
 ```

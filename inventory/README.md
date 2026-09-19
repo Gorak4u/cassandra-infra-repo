@@ -83,9 +83,18 @@ reasoning, is in `defaults.yaml` next to the key.
 > The inventory only decides what a node is **told** — it becomes
 > `PUPPET_SERVER` in the instance metadata. What *enforces* the split is
 > `autosign_allowed_extensions` on each master in the control repo. Set both,
-> or the separation is decorative. [Guide
-> 09](../../guides/09-split-the-estate-across-several-masters.md) has the whole
-> procedure, including the join-secret step that is easy to miss.
+> or the separation is decorative. `guides/09-split-the-estate-across-several-masters.md`
+> in **cassandra-control-repo** has the whole procedure, including the
+> join-secret step that is easy to miss. It is not linked relatively because it
+> lives in the other repo, and this one is public.
+>
+> One thing that guide cannot tell you, because it is Terraform-side: unlike
+> `bin/expand-inventory.py`, the AWS stack has **no implicit fallback** to
+> "the puppetmaster in this expansion". `terraform/aws/locals.tf` walks
+> datacentre, cluster, product, environment file, then `var.puppet_server`, and
+> stops. A slice that expands cleanly here can still fail at
+> `terraform plan` with "No puppet_server for <certname>". State it explicitly
+> for anything you intend to apply.
 
 ## The three tools
 
